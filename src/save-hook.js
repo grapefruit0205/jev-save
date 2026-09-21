@@ -2,11 +2,12 @@
 //   UserPromptSubmit                 → a new turn in the ledger
 //   PreToolUse                       → assess; emit deny / ask / additionalContext (advise) or nothing (shadow)
 //   PostToolUse / PostToolUseFailure → close the ledger entry with the outcome
-// Anything else is ignored. Every failure path exits 0 with no output unless JEV_SAVE_FAIL_CLOSED is set
-// and the call carried the security questions (assess handles that case).
+// Anything else is ignored. Failures exit 0 with no output unless JEV_SAVE_FAIL_CLOSED is enabled for
+// a security-bearing PreToolUse call with mode advise and security on.
 import * as claude from "./adapters/claude.js";
 import * as codex from "./adapters/codex.js";
-import { assess, recordPrompt, recordResult } from "./core/guard.js";
+import { assess, recordPrompt, recordResult, settings, shouldFailClosed } from "./core/guard.js";
+import { requiresSecurity } from "./core/evidence.js";
 import { selectProvider } from "./providers/provider.js";
 import { readConfig } from "./jev.js";
 import { DEFAULT_DIR } from "./core/ledger.js";
@@ -39,7 +40,8 @@ export async function main(argv = process.argv.slice(2), stdin = process.stdin, 
   try { out = await handle(event, { agent, env }); }
   catch (err) {
     process.stderr.write(`jev-save: ${err?.message ?? err}\n`);
-    if (env.JEV_SAVE_FAIL_CLOSED && event.hook_event_name === "PreToolUse") out = (agent === "codex" ? codex : claude).failClosedOutput(`jev-save failed (${err?.message ?? err}) and JEV_SAVE_FAIL_CLOSED is set`);
+    if (event.hook_event_name === "PreToolUse" && shouldFailClosed(settings(env, readConfig(env)), requiresSecurity(event.tool_name)))
+      out = (agent === "codex" ? codex : claude).failClosedOutput(`jev-save failed (${err?.message ?? err}) and JEV_SAVE_FAIL_CLOSED is set`);
   }
   if (out) stdout.write(JSON.stringify(out));
 }

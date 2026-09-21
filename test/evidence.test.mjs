@@ -86,6 +86,13 @@ test("writes, reads, searches, vcs and neutral commands", () => {
 });
 
 test("dangerous subcommands of read-looking tools are never reads (review P1)", () => {
+  assert.equal(kind("gcloud compute instances delete list --quiet"), "external-write");
+  assert.equal(kind("az vm delete --name list --resource-group demo"), "external-write");
+  assert.equal(kind("sort -o result.txt input.txt"), "write-bash");
+  assert.equal(kind("sort -oresult.txt input.txt"), "write-bash");
+  assert.equal(kind("sort --output=result.txt input.txt"), "write-bash");
+  assert.equal(kind("awk 'BEGIN { system(\"touch marker\") }'"), "other");
+  assert.equal(kind('echo "$(touch marker)"'), "other");
   assert.equal(kind("aws s3 rm s3://bucket/x --recursive"), "external-write");
   assert.equal(kind("gh repo delete grapefruit0205/x --yes"), "external-write");
   assert.equal(kind("gh pr create -f"), "external-write");

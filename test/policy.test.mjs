@@ -81,6 +81,9 @@ test("redundant advisory only when the ledger says the last pass is still valid"
   const valid = decide(hot, view({ validity: "valid", last_pass_seq: 12, same_action_count_this_turn: 1, last_outcome_of_this_action: "pass" }), { kind: "check" }, t);
   assert.equal(valid.advisory.rule, "redundant");
   assert.match(valid.advisory.text, /#12 ran this and passed/);
+  for (const last of ["fail", "unknown", null]) {
+    assert.notEqual(decide(hot, view({ validity: "valid", last_pass_seq: 12, last_outcome_of_this_action: last }), { kind: "check" }, t).advisory?.rule, "redundant");
+  }
   for (const validity of ["stale", "unknown", "none"]) {
     const r = decide(hot, view({ validity, last_pass_seq: validity === "none" ? null : 12 }), { kind: "check" }, t);
     assert.notEqual(r.advisory?.rule, "redundant", validity);

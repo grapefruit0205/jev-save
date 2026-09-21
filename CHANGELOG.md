@@ -2,6 +2,13 @@
 
 ## jev-save
 
+### Runtime evidence fixes (2026-09-21)
+- Separate security coverage from efficiency heuristics: security `on`/`log` assesses all shell/MCP calls within explicit exclusions and the session budget. Narrowing `JEV_SAVE_JUDGE_KINDS` no longer narrows that coverage. Tighten cloud subcommand matching and classify shell substitutions, embedded programs and sort output writes conservatively.
+- Honor shadow and security `log`/`off` on both provider errors and hook exceptions, even with `JEV_SAVE_FAIL_CLOSED` set.
+- Never append without the ledger lock or steal a live writer's lock by age. A timeout/write failure marks session evidence uncertain; replace the timing-based lock test with a child-process handshake.
+- Invalidate an earlier passing result after a later failed, unknown or unfinished run of the same action.
+- Reserve provider invocation attempts before execution under the shared lock, including failures. Preserve the budget, original request and numbering through compaction, keeping append order even with nonmonotonic timestamps. Add multiprocess budget and compaction regressions.
+
 ### 0.1.0 — unreleased
 - Forked from leepokai/jev-guard 0.3.1 at 94996ea. Renamed package, CLI, env prefix (`JEV_SAVE_*`), config dir (`~/.jev-save`).
 - `TYPESAFE_API_KEY` accepted first; model pinned to `jev-1.13.0`.

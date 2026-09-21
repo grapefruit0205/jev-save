@@ -2,11 +2,11 @@
 //   recordPrompt(sessionId, text)            UserPromptSubmit → a new turn
 //   assess(action, opts)                     PreToolUse       → classify, decide whether to ask Jev, ask, decide, remember, log
 //   recordResult(sessionId, result)          PostToolUse / PostToolUseFailure → close the entry
-// Everything is fail-open: an error anywhere returns SKIP and the host proceeds. docs/design.md v0.3.
+// Errors fail open by default; fail-closed requires advise + security on. See docs/design.md.
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { actionOutcome, classifyAction, digestOf, pathsOf, previewOf, redact } from "./evidence.js";
-import { append, cwdIdOf, DEFAULT_DIR, readEvents, replay, view } from "./ledger.js";
+import { actionOutcome, classifyAction, digestOf, pathsOf, previewOf, redact, requiresSecurity } from "./evidence.js";
+import { append, cwdIdOf, DEFAULT_DIR, readEvents, replay, reserveCall, view } from "./ledger.js";
 import { buildState } from "./context.js";
 import { BUNDLE_VERSION, bundle } from "./questions.js";
 import { decide, thresholds } from "./policy.js";
@@ -30,11 +30,9 @@ export function settings(env = process.env, config = {}) {
     // on: jev-guard's deny/ask are sent to the host (advise mode). log: the questions are still asked and the
     // verdict recorded, but never sent — for hosts that already run their own permission classifier. off: not asked.
     security: securityMode(env.JEV_SAVE_SECURITY ?? config.security),
-    failClosed: Boolean(env.JEV_SAVE_FAIL_CLOSED),
+    failClosed: env.JEV_SAVE_FAIL_CLOSED != null && !["", "0", "off", "false", "no"].includes(String(env.JEV_SAVE_FAIL_CLOSED).toLowerCase()),
     skipTools: new Set((env.JEV_SAVE_SKIP_TOOLS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)),
-    // Which kinds are always judged. A bash-first workflow where most calls are one-off scripts and shell writes
-    // (77% of calls judged on the author's corpus, ~3.5 min of waiting a day) can narrow this to what carries scope:
-    // JEV_SAVE_JUDGE_KINDS=edit,check,vcs,external-write. Reads still follow the repeat / long-turn rule.
+    // Efficiency candidates only. Security coverage takes precedence while security is on/log.
     judgeKinds: new Set(env.JEV_SAVE_JUDGE_KINDS ? env.JEV_SAVE_JUDGE_KINDS.split(",").map((s) => s.trim()).filter(Boolean) : DEFAULT_JUDGE_KINDS),
     model: env.JEV_MODEL ?? DEFAULT_MODEL,
   };
@@ -47,9 +45,13 @@ export function securityMode(value) {
   return "on";
 }
 
+export function canEnforceSecurity(s) { return s.mode === "advise" && s.security === "on"; }
+export function shouldFailClosed(s, securityRequired) { return s.failClosed && canEnforceSecurity(s) && securityRequired; }
+
 /** Should this call cost a Jev round trip? docs/design.md v0.3 "언제 Jev를 부르는가". */
 export function shouldJudge(cls, v, s) {
   if (v.jev_calls >= s.maxCalls) return { judge: false, why: "budget" };
+  if (s.security !== "off" && cls.securityRequired) return { judge: true, why: "security" };
   if (s.judgeKinds.has(cls.kind)) return { judge: true };
   if (READ_LIKE.has(cls.kind)) {
     if (v.same_action_count_this_turn >= 1) return { judge: true, why: "repeat" };
@@ -79,12 +81,13 @@ export function recordPrompt(sessionId, text, { dir = DEFAULT_DIR(), now = Date.
 export async function assess(action, { provider, env = process.env, config = {}, dir = DEFAULT_DIR(), now = Date.now(), home = homedir(), logPath } = {}) {
   const s = settings(env, config);
   const cls = classifyAction(action.tool, action.input, env);
+  cls.securityRequired = requiresSecurity(action.tool, cls);
   const digest = digestOf(action.tool, action.input);
   const preview = previewOf(action.tool, action.input, 120, home);
   const paths = pathsOf(action.tool, action.input).map((p) => redact(p, home));
   const base = { decision: "SKIP", advisory: null, emit: null, signals: {}, cls, digest, judged: false, cached: false, latencyMs: null, mode: s.mode };
   const cwdId = cwdIdOf(action.cwd);
-  const pre = (extra) => ({ ev: "pre", turn: 0, tool_use_id: action.toolUseId, tool: action.tool, kind: cls.kind, runner: cls.runner, digest, preview, paths, cwd: redact(String(action.cwd ?? ""), home), cwd_id: cwdId, mode: s.mode, exec: "running", ...extra });
+  const pre = (extra) => ({ ev: "pre", attempt_recorded: true, turn: 0, tool_use_id: action.toolUseId, tool: action.tool, kind: cls.kind, runner: cls.runner, digest, preview, paths, cwd: redact(String(action.cwd ?? ""), home), cwd_id: cwdId, mode: s.mode, exec: "running", ...extra });
   const log = (extra) => logDecision({ event: "pre", session: sha(action.sessionId).slice(0, 12), agent: action.agent, tool: action.tool, kind: cls.kind, digest, preview, mode: s.mode, ...extra }, { path: logPath ?? undefined, now });
 
   let state, v;
@@ -101,13 +104,19 @@ export async function assess(action, { provider, env = process.env, config = {},
   const gate = shouldJudge(cls, v, s);
   if (!gate.judge) { append(action.sessionId, pre({ turn, decision: "SKIP", judged: false }), { dir, now }); log({ turn, decision: "SKIP", why: gate.why }); return base; }
 
-  const security = s.security !== "off" && !READ_LIKE.has(cls.kind);
+  const security = s.security !== "off" && cls.securityRequired;
   const questions = bundle({ security, untrusted: false });
   const jevState = buildState(action, cls, v, { home });
-  const key = cacheKey(s.model, BUNDLE_VERSION, jevState);
+  const key = cacheKey(s.model, BUNDLE_VERSION, { state: jevState, questions });
   let answers = lookup(action.sessionId, dir, key);
   let cached = Boolean(answers), latencyMs = null;
   if (!answers) {
+    const reservation = reserveCall(action.sessionId, { limit: s.maxCalls, dir, now });
+    if (!reservation.ok) {
+      append(action.sessionId, pre({ turn, decision: "SKIP", judged: false }), { dir, now });
+      log({ turn, decision: "SKIP", why: reservation.why });
+      return base;
+    }
     const started = Date.now();
     try {
       answers = await provider.decide(jevState, questions, { env });
@@ -115,10 +124,10 @@ export async function assess(action, { provider, env = process.env, config = {},
       store(action.sessionId, dir, key, answers, now);
     } catch (err) {
       const error = String(err?.message ?? err);
-      const closed = s.failClosed && security;
+      const closed = shouldFailClosed(s, cls.securityRequired);
       append(action.sessionId, pre({ turn, decision: closed ? "DENY" : "SKIP", judged: false, exec: closed && s.mode === "advise" ? "blocked" : "running" }), { dir, now });
       log({ turn, decision: closed ? "DENY" : "SKIP", why: "provider-error", error, latency_ms: Date.now() - started });
-      if (closed && s.mode === "advise") return { ...base, decision: "DENY", emit: { kind: "deny", text: `jev-save unavailable (${error}) and JEV_SAVE_FAIL_CLOSED is set` }, error };
+      if (closed) return { ...base, decision: "DENY", emit: { kind: "deny", text: `jev-save unavailable (${error}) and JEV_SAVE_FAIL_CLOSED is set` }, error };
       return { ...base, error };
     }
   }
