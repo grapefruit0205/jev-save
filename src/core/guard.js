@@ -133,7 +133,8 @@ export async function assess(action, { provider, env = process.env, config = {},
   const advised = emit?.kind === "context";
   append(action.sessionId, pre({ turn, decision: r.decision, judged: true, advised, exec: emit?.kind === "deny" ? "blocked" : "running" }), { dir, now });
   log({ turn, decision: r.decision, fired: r.fired, advisory: r.advisory ? { rule: r.advisory.rule, suppressed: r.advisory.suppressed, why: r.advisory.why } : null, emitted: emit?.kind ?? null,
-    signals: r.signals, margin: r.decisionMargin, cached, latency_ms: latencyMs, provider: provider.name, view: { calls: v.calls_this_turn, same: v.same_action_count_this_turn, validity: v.validity, last: v.last_outcome_of_this_action } });
+    signals: r.signals, margin: r.decisionMargin, cached, latency_ms: latencyMs, provider: provider.name, model: cached ? undefined : provider.last?.model ?? s.model,
+    view: { calls: v.calls_this_turn, same: v.same_action_count_this_turn, validity: v.validity, last: v.last_outcome_of_this_action } });
   return { ...base, decision: r.decision, advisory: r.advisory, emit, signals: r.signals, judged: true, cached, latencyMs, reason: r.reason };
 }
 

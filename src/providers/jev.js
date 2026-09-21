@@ -6,11 +6,16 @@ import { ask } from "../jev.js";
 export const DEFAULT_TIMEOUT_MS = 5000;
 
 export function jevProvider({ fetchImpl } = {}) {
-  return {
+  const provider = {
     name: "jev",
-    decide(state, questions, { env = process.env, timeoutMs, signal } = {}) {
+    last: null,   // {model, usage} of the most recent answer: the version the alias resolved to
+    async decide(state, questions, { env = process.env, timeoutMs, signal } = {}) {
       const budget = timeoutMs ?? +(env.JEV_SAVE_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
-      return ask(state, questions, { env, fetchImpl, signal, timeoutMs: budget });
+      const meta = {};
+      const answers = await ask(state, questions, { env, fetchImpl, signal, timeoutMs: budget, meta });
+      provider.last = meta;
+      return answers;
     },
   };
+  return provider;
 }

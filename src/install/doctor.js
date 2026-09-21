@@ -24,8 +24,9 @@ export async function doctor({ env = process.env, home = homedir(), cli, node, f
   if (b && live) {
     const started = Date.now();
     try {
-      const a = await ask("doctor", { alive: { type: "noul", instructions: "Is this a test request?" } }, { env, fetchImpl, timeoutMs: 8000 });
-      ok("jev api", typeof a.alive?.p === "number", `${Date.now() - started} ms round trip, model ${env.JEV_MODEL ?? DEFAULT_MODEL}`);
+      const meta = {};
+      const a = await ask("doctor", { alive: { type: "noul", instructions: "Is this a test request?" } }, { env, fetchImpl, timeoutMs: 8000, meta });
+      ok("jev api", typeof a.alive?.p === "number", `${Date.now() - started} ms round trip, ${env.JEV_MODEL ?? DEFAULT_MODEL} → ${meta.model ?? "?"}`);
     } catch (err) { ok("jev api", false, String(err?.message ?? err)); }
   } else ok("jev api", false, b ? "skipped" : "no key");
 

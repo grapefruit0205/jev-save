@@ -8,8 +8,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const CONFIG_FILE = join(homedir(), ".jev-save", "config.json");
-// Pinned, not `jev-latest`: measurements (shadow logs, thresholds) are only comparable against one model version.
-export const DEFAULT_MODEL = "jev-1.13.0";
+// `jev-latest`, not a pinned version: on 2026-09-21 the API stopped accepting `jev-1.13.0` ("Unknown model") and
+// its model list carries only the aliases. The version actually served comes back in the response (`model`) and
+// is recorded per decision (see `meta` below), which is what keeps shadow logs comparable.
+export const DEFAULT_MODEL = "jev-latest";
 
 // Env first (CLIs inherit the shell); then ~/.jev-save/config.json written by `jev-save key`, which is what
 // GUI hosts such as Cursor or Zed need since they don't see your shell profile.
@@ -29,7 +31,7 @@ export function readConfig(env = process.env) {
 }
 
 /** @returns {Promise<Record<string, {p?: number, choice?: string, score?: number, probabilities?: Record<string, number>, confidence?: number}>>} */
-export async function ask(state, questions, { env = process.env, fetchImpl = fetch, signal, timeoutMs } = {}) {
+export async function ask(state, questions, { env = process.env, fetchImpl = fetch, signal, timeoutMs, meta } = {}) {
   const b = backend(env);
   if (!b) throw new Error("no credentials: run `jev-save key <key>` or set JEV_API_KEY / AI_GATEWAY_API_KEY");
   const gw = b.kind === "gateway";
@@ -62,6 +64,7 @@ export async function ask(state, questions, { env = process.env, fetchImpl = fet
   }
   if (!res.ok) throw new Error(`${b.kind} HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const body = await res.json();
+  if (meta && typeof meta === "object") Object.assign(meta, { model: body.model, usage: body.usage });   // the version actually served
   const conf = body.providerMetadata?.typesafe?.confidence ?? {};
   return mapValues(body.answers, (a, id) => ({
     p: a.noul ?? a.probability, choice: a.choice, score: a.score, probabilities: a.probabilities,

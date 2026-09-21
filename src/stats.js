@@ -16,7 +16,10 @@ export function stats({ path = DEFAULT_LOG(), days, now = Date.now() } = {}) {
   for (const r of judged) if (r.advisory?.rule) byRule[r.advisory.rule] = (byRule[r.advisory.rule] ?? 0) + 1;
   const advised = count((r) => r.emitted === "context");
   const gated = count((r) => r.emitted === "deny" || r.emitted === "ask");
-  const loggedOnly = count((r) => (r.fired ?? []).some((f) => /^security:.*:logged$/.test(f)));
+  // recorded only: a logged verdict (security=log) or a shadow-mode ask/deny that was never sent
+  const loggedOnly = count((r) => (r.fired ?? []).some((f) => /^security:.*:logged$/.test(f)) || ((r.decision === "ASK" || r.decision === "DENY") && !r.emitted));
+  const models = {};
+  for (const r of judged) if (r.model) models[r.model] = (models[r.model] ?? 0) + 1;
   const sessions = new Set(rows.map((r) => r.session)).size;
   const out = [
     `${rows.length} decisions in ${sessions} sessions${days ? ` (last ${days} days)` : ""}, ${path}`,
@@ -26,6 +29,7 @@ export function stats({ path = DEFAULT_LOG(), days, now = Date.now() } = {}) {
     `  security gate      ${gated} deny/ask sent to the host, ${loggedOnly} recorded only (security=log or shadow)`,
     `  latency            p50 ${q(0.5) ?? "–"} ms, p90 ${q(0.9) ?? "–"} ms over ${lat.length} calls`,
     `  modes              shadow ${count((r) => r.mode === "shadow")}, advise ${count((r) => r.mode === "advise")}`,
+    `  model served       ${Object.entries(models).map(([m, n]) => `${m} ${n}`).join("  ") || "–"}`,
   ];
   return out.join("\n");
 }

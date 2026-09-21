@@ -22,6 +22,9 @@
 
 - `jev-save security on|log|off` (`JEV_SAVE_SECURITY`, or `config.json`): `log` asks jev-guard's questions and records the verdict without sending deny/ask, so advise mode can be turned on early on a host that already runs a permission classifier. Policy evaluates the advisories even when a logged security verdict fired.
 
+- Default model is `jev-latest` again: the API began rejecting `jev-1.13.0` by name on 2026-09-21 ("Unknown model") while its model list carries only the aliases; every judged call left the guard failing open. The version the alias resolves to (`model` in the response) is now recorded per decision and shown by `doctor` and `stats`.
+- `stats` counts shadow-mode ask/deny as "recorded only".
+
 ## Upstream history (jev-guard, before the fork)
 
 ## 0.3.1 — 2026-09-18

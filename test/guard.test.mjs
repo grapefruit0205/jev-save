@@ -205,6 +205,18 @@ test("recordResult: outcomes from the runner output, failures and interrupts; un
   assert.deepEqual(recordResult(sid, { toolUseId: "f", tool: "Bash", input: { command: "npm test" }, output: "", hostSuccess: true }, { dir }), { kind: "check", result: "pass", exec: "completed" });
 });
 
+test("the Jev provider records the model version the alias resolved to, and the guard logs it per decision", async () => {
+  const { jevProvider } = await import("../src/providers/jev.js");
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ model: "jev-9.9.9", answers: { necessary: { type: "noul", noul: 0.9 }, in_scope: { type: "noul", noul: 0.9 }, redundant: { type: "noul", noul: 0.1 }, scope_expansion: { type: "noul", noul: 0.1 }, kind: { type: "choice", choice: "progress", probabilities: {}, confidence: 0.9 } }, usage: { input_tokens: 5 } }) });
+  const provider = jevProvider({ fetchImpl });
+  const dir = fresh(); const logPath = join(dir, "decisions.jsonl");
+  recordPrompt(sid, "x", { dir });
+  const r = await assess(act("Edit", { file_path: "a.py", old_string: "a", new_string: "b" }, { id: "e1" }), { provider, dir, logPath, env: { JEV_API_KEY: "test", JEV_SAVE_SECURITY: "0" } });
+  assert.equal(r.decision, "ALLOW");
+  assert.equal(provider.last.model, "jev-9.9.9");
+  assert.equal(logLines(logPath).at(-1).model, "jev-9.9.9");
+});
+
 test("fail-open: a provider outage is SKIP and logged; fail-closed denies only in advise mode and only for security-bearing calls", async () => {
   const dir = fresh(); const logPath = join(dir, "decisions.jsonl");
   recordPrompt(sid, "x", { dir });

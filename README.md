@@ -104,7 +104,7 @@ Claude Code picks the hooks up at once, even in a running session. Codex needs t
 | `JEV_SAVE_JUDGE_KINDS` | `edit,write-bash,other,check,vcs,external-write` | kinds always judged; bash-heavy sessions (one-off scripts, heredocs) can narrow it to `edit,check,vcs,external-write` — on the author's corpus the default judges 77% of calls, about 3.5 min of waiting a day |
 | `JEV_SAVE_SKIP_TOOLS` | | tool names never judged |
 | `JEV_SAVE_FAIL_CLOSED` | unset | deny (security-bearing calls, advise mode) when Jev is unreachable |
-| `JEV_MODEL` | `jev-1.13.0` | pinned so shadow logs stay comparable |
+| `JEV_MODEL` | `jev-latest` | the API accepts only its aliases (`jev-1.13.0` by name was rejected on 2026-09-21); the version actually served is recorded per decision, which is what keeps logs comparable |
 | `JEV_SAVE_SESSIONS` `JEV_SAVE_LOG` `JEV_SAVE_CONFIG` | `~/.jev-save/…` | state locations |
 
 ## What leaves your machine
