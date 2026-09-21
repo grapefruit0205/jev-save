@@ -27,7 +27,9 @@ export function settings(env = process.env, config = {}) {
     mode,
     maxCalls: n("JEV_SAVE_MAX_CALLS", 200),
     longTurn: n("JEV_SAVE_LONG_TURN", 12),
-    security: env.JEV_SAVE_SECURITY !== "0",
+    // on: jev-guard's deny/ask are sent to the host (advise mode). log: the questions are still asked and the
+    // verdict recorded, but never sent — for hosts that already run their own permission classifier. off: not asked.
+    security: securityMode(env.JEV_SAVE_SECURITY ?? config.security),
     failClosed: Boolean(env.JEV_SAVE_FAIL_CLOSED),
     skipTools: new Set((env.JEV_SAVE_SKIP_TOOLS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)),
     // Which kinds are always judged. A bash-first workflow where most calls are one-off scripts and shell writes
@@ -36,6 +38,13 @@ export function settings(env = process.env, config = {}) {
     judgeKinds: new Set(env.JEV_SAVE_JUDGE_KINDS ? env.JEV_SAVE_JUDGE_KINDS.split(",").map((s) => s.trim()).filter(Boolean) : DEFAULT_JUDGE_KINDS),
     model: env.JEV_MODEL ?? DEFAULT_MODEL,
   };
+}
+
+export function securityMode(value) {
+  const v = String(value ?? "on").trim().toLowerCase();
+  if (v === "0" || v === "off" || v === "false" || v === "no") return "off";
+  if (v === "log" || v === "shadow" || v === "observe") return "log";
+  return "on";
 }
 
 /** Should this call cost a Jev round trip? docs/design.md v0.3 "언제 Jev를 부르는가". */
@@ -92,7 +101,7 @@ export async function assess(action, { provider, env = process.env, config = {},
   const gate = shouldJudge(cls, v, s);
   if (!gate.judge) { append(action.sessionId, pre({ turn, decision: "SKIP", judged: false }), { dir, now }); log({ turn, decision: "SKIP", why: gate.why }); return base; }
 
-  const security = s.security && !READ_LIKE.has(cls.kind);
+  const security = s.security !== "off" && !READ_LIKE.has(cls.kind);
   const questions = bundle({ security, untrusted: false });
   const jevState = buildState(action, cls, v, { home });
   const key = cacheKey(s.model, BUNDLE_VERSION, jevState);
@@ -114,7 +123,7 @@ export async function assess(action, { provider, env = process.env, config = {},
     }
   }
 
-  const r = decide(answers, v, cls, thresholds(env));
+  const r = decide(answers, v, cls, thresholds(env), { securityMode: s.security });
   let emit = null;
   if (s.mode === "advise") {
     if (r.decision === "DENY") emit = { kind: "deny", text: r.reason };

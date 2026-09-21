@@ -18,8 +18,11 @@ test("settings: shadow by default, advise on request, security on unless disable
   assert.equal(settings({}).mode, "shadow");
   assert.equal(settings({ JEV_SAVE_MODE: "advise" }).mode, "advise");
   assert.equal(settings({ JEV_SAVE_MODE: "enforce" }).mode, "shadow");   // not a mode in this version
-  assert.equal(settings({}).security, true);
-  assert.equal(settings({ JEV_SAVE_SECURITY: "0" }).security, false);
+  assert.equal(settings({}).security, "on");
+  assert.equal(settings({ JEV_SAVE_SECURITY: "0" }).security, "off");
+  assert.equal(settings({ JEV_SAVE_SECURITY: "log" }).security, "log");
+  assert.equal(settings({}, { security: "log" }).security, "log", "config.json applies when the environment is silent");
+  assert.equal(settings({ JEV_SAVE_SECURITY: "on" }, { security: "log" }).security, "on", "the environment wins");
   assert.ok(settings({ JEV_SAVE_SKIP_TOOLS: "Foo, bar" }).skipTools.has("bar"));
 });
 
@@ -149,6 +152,10 @@ test("pipeline: scope expansion on an edit is an advisory, never a block; securi
   assert.equal(replay(readEvents(sid, dir)).entries.at(-1).exec, "blocked");
   const noSec = await assess(rm, { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise", JEV_SAVE_SECURITY: "0" } });
   assert.equal(noSec.decision, "ALLOW");
+  const logged = await assess(act("Bash", { command: "rm -rf /" }, { id: "b2" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise", JEV_SAVE_SECURITY: "log" } });
+  assert.equal(logged.decision, "ALLOW"); assert.equal(logged.emit, null, "security=log never blocks");
+  assert.ok(logLines(logPath).at(-1).fired.includes("security:risk:logged"));
+  assert.equal(replay(readEvents(sid, dir)).entries.at(-1).exec, "running");
 });
 
 test("pipeline: redundant check after a pass with no change is an advisory; after an edit it is not", async () => {

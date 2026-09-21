@@ -13,6 +13,7 @@ const USAGE = `jev-save — runtime efficiency guard for coding agents, powered 
   jev-save hook [--agent codex]          Command hook (JSON on stdin → JSON on stdout) for Claude Code and Codex
   jev-save check [--task "…"] <tool> '<json>'   Judge one tool call in a throwaway session (--task: the user request to judge against)
   jev-save mode [shadow|advise]          Show or set the mode (shadow: log only; advise: send advisories to the agent)
+  jev-save security [on|log|off]         jev-guard's deny/ask: sent to the host (on), recorded only (log), or not asked (off)
   jev-save install claude|codex          Back up the host's user config, add jev-save's hooks, record what was added
   jev-save uninstall claude|codex        Remove exactly the entries install recorded; backups stay
   jev-save doctor                        Node, key, one Jev round trip, hook registration, state directories
@@ -70,6 +71,18 @@ switch (cmd) {
     mkdirSync(dirname(CONFIG_FILE), { recursive: true, mode: 0o700 });
     writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
     console.log(`jev-save: mode ${want} saved to ${CONFIG_FILE}${process.env.JEV_SAVE_MODE ? ` (JEV_SAVE_MODE=${process.env.JEV_SAVE_MODE} in this shell overrides it)` : ""}`);
+    break;
+  }
+  case "security": {
+    const { CONFIG_FILE, readConfig } = await import("./jev.js");
+    const { securityMode } = await import("./core/guard.js");
+    const want = rest[0];
+    if (!want) { console.log(`security: ${securityMode(process.env.JEV_SAVE_SECURITY ?? readConfig().security)}${process.env.JEV_SAVE_SECURITY ? " (from JEV_SAVE_SECURITY)" : ""}`); break; }
+    if (!["on", "log", "off"].includes(want)) die("security must be on, log or off");
+    const cfg = { ...readConfig(), security: want };
+    mkdirSync(dirname(CONFIG_FILE), { recursive: true, mode: 0o700 });
+    writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+    console.log(`jev-save: security ${want} saved to ${CONFIG_FILE}${process.env.JEV_SAVE_SECURITY ? ` (JEV_SAVE_SECURITY=${process.env.JEV_SAVE_SECURITY} in this shell overrides it)` : ""}`);
     break;
   }
   case "install": {

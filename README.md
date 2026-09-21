@@ -63,7 +63,7 @@ tool result ──► PostToolUse hook ─────► ledger: outcome (pass 
 
 **Cost is bounded.** Jev is asked about edits, shell writes, scripts, checks, commits/pushes and MCP tools with side effects; about reads and searches only when they repeat within a turn or the turn has already made 12 calls. A session stops asking after 200 calls. An answer cache keyed on the whole state handles exact retries. Every failure path — no key, a timeout, a malformed answer — lets the call through and writes one line to the log.
 
-**Shadow first.** The default mode records every judgment in `~/.jev-save/decisions.jsonl` and sends nothing to the agent. `jev-save stats` shows what would have fired; a labeled sample of those decisions sets the thresholds before `jev-save mode advise` turns advisories on. That order exists because the base rate of the original target — re-running a still-valid check — turned out to be small on the author's own sessions ([docs/baserate-2026-09-21.md](docs/baserate-2026-09-21.md)): measure before you trust.
+**Shadow first, but not for long.** The shipped default records every judgment in `~/.jev-save/decisions.jsonl` and sends nothing to the agent. Advise mode logs exactly the same, so switching early costs little: a wrong efficiency advisory is one line the agent can ignore, and the log still says what fired and whether the agent changed course. What a shadow period buys is a clean baseline without advisories, which the fixture A/B can supply later. The one thing to decide before switching is the security gate: its `ask` becomes a real permission prompt (a `sed -i` edit scored risk 1.7 live), so a host that already runs its own permission classifier should set `jev-save security log`.
 
 ## Install
 
@@ -80,7 +80,8 @@ jev-save doctor                  # node, key, one Jev round trip, hook registrat
 As a plugin instead: `/plugin marketplace add grapefruit0205/jev-save` then `/plugin install jev-save@jev-save` in Claude Code; `codex plugin marketplace add grapefruit0205/jev-save` for Codex.
 
 ```bash
-jev-save mode advise                          # turn advisories on (default: shadow, log only)
+jev-save mode advise                          # turn advisories on (default: shadow, log only); every judgment is still logged
+jev-save security log                         # keep jev-guard's deny/ask as a record only (Claude Code's own permission layer stays in charge)
 jev-save check --task "fix login" Bash '{"command":"pytest -q"}'   # judge one call, print the signals
 jev-save stats --days 7                       # what the decision log says
 jev-save uninstall claude                     # removes only the entries install recorded; backups stay
@@ -92,7 +93,7 @@ Claude Code picks the hooks up at once, even in a running session. Codex needs t
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `JEV_SAVE_MODE` | `shadow` (or `config.json`) | `advise` sends advisories to the agent |
-| `JEV_SAVE_SECURITY` | `1` | `0` drops jev-guard's security questions |
+| `JEV_SAVE_SECURITY` | `on` (or `config.json`) | `log` asks the security questions and records the verdict but never sends deny/ask — for hosts that already run a permission classifier; `off` does not ask them. `jev-save security on\|log\|off` |
 | `JEV_SAVE_ASK_SCORE` `JEV_SAVE_DENY_SCORE` | `1.5` `2.5` | jev-guard's risk thresholds; bash-first workflows may want `JEV_SAVE_ASK_SCORE=2` (a `sed -i` edit scored 1.7 live) |
 | `JEV_SAVE_MAX_CALLS` | `200` | Jev calls per session |
 | `JEV_SAVE_LONG_TURN` | `12` | calls in a turn after which reads are judged too |

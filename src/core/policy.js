@@ -32,32 +32,35 @@ const margin = (x) => (x == null ? 0 : Math.abs(x - 0.5) * 2);
  * @param {ReturnType<typeof thresholds>} t
  * @returns {DecisionResult & {advisory: null | {rule:string, text:string, suppressed:boolean, why?:string}}}
  */
-export function decide(answers, view, cls, t = thresholds()) {
+export function decide(answers, view, cls, t = thresholds(), { securityMode = "on" } = {}) {
   const signals = {};
   for (const id of ["in_scope", "necessary", "redundant", "scope_expansion", "approval", "user_requested", "from_untrusted"]) if (p(answers[id]) != null) signals[id] = round(p(answers[id]));
   if (typeof answers.risk?.score === "number") signals.risk = round(answers.risk.score);
   if (answers.kind?.choice) signals.kind = answers.kind.choice;
 
-  // 1. security (jev-guard's rules); only meaningful when the security questions were asked
-  let demoted = null;
+  // 1. security (jev-guard's rules); only meaningful when the security questions were asked. In `log` mode the
+  //    verdict is recorded in `fired` and the advisories still get their turn: the host's own permission layer
+  //    keeps the gate, jev-save only observes.
+  const fired = [];
   if (answers.risk && answers.approval) {
     const s = securityDecide(answers, t);
     if (s.level === "deny") {
-      return result("DENY", `jev-save blocked this call${s.why ? ` because ${s.why}` : ""} (risk ${signals.risk}/3, approval p=${signals.approval ?? 0}). If the user really wants it, they can run it themselves.`, signals, [s.why ? "security:untrusted" : "security:risk"], [p(answers.from_untrusted), answers.risk.score / 3]);
-    }
-    if (s.level === "ask") {
+      const r = result("DENY", `jev-save blocked this call${s.why ? ` because ${s.why}` : ""} (risk ${signals.risk}/3, approval p=${signals.approval ?? 0}). If the user really wants it, they can run it themselves.`, signals, [s.why ? "security:untrusted" : "security:risk"], [p(answers.from_untrusted), answers.risk.score / 3]);
+      if (securityMode === "on") return r;
+      fired.push(`${r.fired[0]}:logged`);
+    } else if (s.level === "ask") {
       // With the efficiency context in view, `approval` reacts to the request itself (an off-request edit scores
       // 0.8–0.95 at risk 1.0). That is the scope advisory's job, so approval alone asks only when the risk score
       // also says the call is hard to undo (≥ askScore); otherwise it is recorded and the advisories decide.
       if (answers.risk.score >= t.askScore) {
-        return result("ASK", `jev-save: this call needs the user's approval (risk ${signals.risk}/3, approval p=${signals.approval ?? 0}).`, signals, ["security:ask"], [p(answers.approval), answers.risk.score / 3]);
-      }
-      demoted = "security:approval-only";
+        const r = result("ASK", `jev-save: this call needs the user's approval (risk ${signals.risk}/3, approval p=${signals.approval ?? 0}).`, signals, ["security:ask"], [p(answers.approval), answers.risk.score / 3]);
+        if (securityMode === "on") return r;
+        fired.push("security:ask:logged");
+      } else fired.push("security:approval-only");
     }
   }
 
   // 2. one efficiency advisory at most, by priority
-  const fired = demoted ? [demoted] : [];
   let advisory = null;
   const inScope = p(answers.in_scope), expansion = p(answers.scope_expansion), necessary = p(answers.necessary), redundant = p(answers.redundant);
   // scope needs a request to be measured against, and the two signals must agree: a low in_scope with a low

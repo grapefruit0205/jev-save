@@ -20,6 +20,8 @@
 
 - `JEV_SAVE_JUDGE_KINDS` selects the kinds that are always judged (default unchanged). Measured on the author's corpus: the default judges 77% of calls, ≈3.5 min of waiting a day; a bash-first session can narrow it to `edit,check,vcs,external-write`.
 
+- `jev-save security on|log|off` (`JEV_SAVE_SECURITY`, or `config.json`): `log` asks jev-guard's questions and records the verdict without sending deny/ask, so advise mode can be turned on early on a host that already runs a permission classifier. Policy evaluates the advisories even when a logged security verdict fired.
+
 ## Upstream history (jev-guard, before the fork)
 
 ## 0.3.1 — 2026-09-18

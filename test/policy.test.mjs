@@ -52,6 +52,17 @@ test("security first: high risk denies, mid risk asks, and the user's explicit r
   assert.equal(decide(eff(), view(), { kind: "write-bash" }, t).decision, "ALLOW");
 });
 
+test("security in log mode is recorded, never returned, and the advisories still run", () => {
+  const r = decide({ ...eff({ scope_expansion: { p: 0.95 } }), ...sec(2.9) }, view(), { kind: "write-bash" }, t, { securityMode: "log" });
+  assert.equal(r.decision, "ALLOW");
+  assert.deepEqual(r.fired, ["security:risk:logged", "scope"]);
+  assert.equal(r.advisory.rule, "scope");
+  const a = decide({ ...eff(), ...sec(2.0, 0.8) }, view(), { kind: "write-bash" }, t, { securityMode: "log" });
+  assert.equal(a.decision, "ALLOW");
+  assert.deepEqual(a.fired, ["security:ask:logged"]);
+  assert.equal(decide({ ...eff(), ...sec(2.9) }, view(), { kind: "write-bash" }, t, { securityMode: "on" }).decision, "DENY");
+});
+
 test("scope advisory: expansion or a low in_scope, quoting the request", () => {
   const r = decide(eff({ scope_expansion: { p: 0.91 }, in_scope: { p: 0.3 } }), view(), { kind: "edit" }, t);
   assert.equal(r.decision, "ALLOW");

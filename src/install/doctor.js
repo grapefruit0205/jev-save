@@ -16,7 +16,7 @@ export async function doctor({ env = process.env, home = homedir(), cli, node, f
   ok("node", major >= 20, process.versions.node + (major >= 20 ? "" : " (need 20.3+)"));
 
   const s = settings(env, readConfig(env));
-  ok("mode", true, `${s.mode}${s.security ? ", security questions on" : ", security questions off"}, model ${s.model}`);
+  ok("mode", true, `${s.mode}, security ${s.security === "on" ? "on (deny/ask sent to the host)" : s.security === "log" ? "log (recorded, never sent)" : "off"}, model ${s.model}`);
 
   const b = backend(env);
   ok("api key", Boolean(b), b ? `${b.kind} (from ${env.TYPESAFE_API_KEY || env.JEV_API_KEY || env.AI_GATEWAY_API_KEY || env.VERCEL_OIDC_TOKEN ? "environment" : "~/.jev-save/config.json"})` : "none: run `jev-save key <key>` or export TYPESAFE_API_KEY; the guard fails open until then");

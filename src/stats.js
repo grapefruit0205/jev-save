@@ -16,13 +16,14 @@ export function stats({ path = DEFAULT_LOG(), days, now = Date.now() } = {}) {
   for (const r of judged) if (r.advisory?.rule) byRule[r.advisory.rule] = (byRule[r.advisory.rule] ?? 0) + 1;
   const advised = count((r) => r.emitted === "context");
   const gated = count((r) => r.emitted === "deny" || r.emitted === "ask");
+  const loggedOnly = count((r) => (r.fired ?? []).some((f) => /^security:.*:logged$/.test(f)));
   const sessions = new Set(rows.map((r) => r.session)).size;
   const out = [
     `${rows.length} decisions in ${sessions} sessions${days ? ` (last ${days} days)` : ""}, ${path}`,
     `  judged by Jev      ${judged.length}  (${count((r) => r.why === "read")} reads skipped, ${count((r) => r.why === "budget")} over budget, ${count((r) => r.why === "provider-error")} provider errors)`,
     `  decisions          ${["ALLOW", "ASK", "DENY", "SKIP"].map((d) => `${d} ${count((r) => r.decision === d)}`).join("  ")}`,
     `  advisories fired   ${Object.entries(byRule).map(([k, n]) => `${k} ${n}`).join("  ") || "none"}  (${count((r) => r.advisory?.suppressed)} suppressed, ${advised} sent to the agent)`,
-    `  security gate      ${gated} deny/ask sent to the host`,
+    `  security gate      ${gated} deny/ask sent to the host, ${loggedOnly} recorded only (security=log or shadow)`,
     `  latency            p50 ${q(0.5) ?? "–"} ms, p90 ${q(0.9) ?? "–"} ms over ${lat.length} calls`,
     `  modes              shadow ${count((r) => r.mode === "shadow")}, advise ${count((r) => r.mode === "advise")}`,
   ];

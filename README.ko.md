@@ -63,7 +63,7 @@ tool 결과       ──► PostToolUse hook ─────► ledger: 결과(p
 
 **비용은 제한됩니다.** Jev에게 묻는 것은 편집, 셸 쓰기, 스크립트, 검사, commit과 push, 부작용이 있는 MCP 도구입니다. 읽기와 검색은 같은 턴에서 반복되거나 턴의 호출이 이미 12번을 넘었을 때만 묻습니다. 세션당 200번이 지나면 더 묻지 않습니다. state 전체를 키로 하는 답변 cache가 정확한 재시도를 처리합니다. 키 없음, 시간 초과, 잘못된 답 같은 모든 실패 경로는 호출을 통과시키고 로그에 한 줄만 남깁니다.
 
-**shadow가 먼저입니다.** 기본 모드는 모든 판단을 `~/.jev-save/decisions.jsonl`에 기록하고 에이전트에게는 아무것도 보내지 않습니다. `jev-save stats`로 무엇이 발동했을지 보고, 그 판단의 표본을 라벨링해 임계값을 정한 뒤에야 `jev-save mode advise`로 권고를 켭니다. 이 순서를 두는 이유가 있습니다. 원래 목표였던 "유효한 검사의 재실행"은 저자 자신의 세션에서 재 보니 작았습니다([docs/baserate-2026-09-21.md](docs/baserate-2026-09-21.md)). 믿기 전에 재야 합니다.
+**shadow가 먼저지만, 길 필요는 없습니다.** 배포 기본값은 모든 판단을 `~/.jev-save/decisions.jsonl`에 기록하고 에이전트에게는 아무것도 보내지 않습니다. advise 모드도 똑같이 기록하므로 일찍 켜도 잃는 것이 적습니다. 잘못된 효율 권고는 에이전트가 무시할 수 있는 한 줄이고, 로그에는 무엇이 발동했고 에이전트가 방향을 바꿨는지가 남습니다. shadow 기간이 주는 것은 권고 없는 기준선인데, 그것은 나중에 fixture A/B로 얻을 수 있습니다. 켜기 전에 정할 것은 보안 게이트 하나입니다. 그 `ask`는 실제 승인 프롬프트가 되므로(실측에서 `sed -i` 편집이 risk 1.7), 호스트가 이미 권한 분류기를 돌린다면 `jev-save security log`로 두세요.
 
 ## 설치
 
@@ -80,7 +80,8 @@ jev-save doctor                  # node, 키, Jev 왕복 1회, hook 등록, 상�
 플러그인으로 설치하려면 Claude Code에서 `/plugin marketplace add grapefruit0205/jev-save` 뒤 `/plugin install jev-save@jev-save`, Codex에서 `codex plugin marketplace add grapefruit0205/jev-save`입니다.
 
 ```bash
-jev-save mode advise                          # 권고를 켬 (기본: shadow, 로그만)
+jev-save mode advise                          # 권고를 켬 (기본: shadow, 로그만). 판단은 어느 모드에서나 전부 기록됨
+jev-save security log                         # jev-guard의 deny/ask는 기록만 (Claude Code의 권한 계층이 그대로 담당)
 jev-save check --task "로그인 고쳐" Bash '{"command":"pytest -q"}'   # 호출 하나를 판단하고 신호를 출력
 jev-save stats --days 7                       # 결정 로그 요약
 jev-save uninstall claude                     # install이 기록한 항목만 제거. 백업은 남음
@@ -92,7 +93,7 @@ Claude Code는 hook을 바로 읽습니다. 실행 중인 세션에도 적용됩
 | 변수 | 기본값 | 효과 |
 | --- | --- | --- |
 | `JEV_SAVE_MODE` | `shadow` (또는 `config.json`) | `advise`면 권고를 에이전트에게 보냄 |
-| `JEV_SAVE_SECURITY` | `1` | `0`이면 jev-guard의 보안 질문을 뺌 |
+| `JEV_SAVE_SECURITY` | `on` (또는 `config.json`) | `log`면 보안 질문은 묻되 판정을 기록만 하고 deny/ask를 보내지 않음. 호스트가 이미 권한 분류기를 돌리는 경우용. `off`면 묻지 않음. `jev-save security on\|log\|off` |
 | `JEV_SAVE_ASK_SCORE` `JEV_SAVE_DENY_SCORE` | `1.5` `2.5` | jev-guard의 risk 임계값. bash 우선 작업이라면 `JEV_SAVE_ASK_SCORE=2`가 나을 수 있음 (실측에서 `sed -i` 편집이 1.7) |
 | `JEV_SAVE_MAX_CALLS` | `200` | 세션당 Jev 호출 수 |
 | `JEV_SAVE_LONG_TURN` | `12` | 이 수를 넘는 턴에서는 읽기도 판단 |
