@@ -5,19 +5,15 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { canonical } from "./evidence.js";
 import { sessionPath } from "./ledger.js";
+
+export { canonical };
 
 const MAX_ENTRIES = 100;
 
 export function cacheKey(model, bundleVersion, state) {
   return createHash("sha256").update(`${model}\n${bundleVersion}\n${canonical(state)}`).digest("hex");
-}
-
-/** Deterministic JSON: object keys sorted at every level. */
-export function canonical(value) {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(",")}}`;
-  return JSON.stringify(value ?? null);
 }
 
 export function cachePath(sessionId, dir) {

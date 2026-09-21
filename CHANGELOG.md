@@ -11,6 +11,13 @@
 - Stage 3: Claude Code and Codex adapters, `jev-save hook`, plugin manifests (PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit), `install`/`uninstall` with backups and an exact registry, `doctor`, `mode`, `check --task`, `stats`. jev-guard's hook stays reachable as `hook --legacy` for the other hosts.
 - First live run against `jev-1.13.0` (585–950 ms per call): a migration write and an unrelated refactor under "fix the login bug only" scored scope_expansion 0.97 / 0.90, an in-scope edit 0.13, a test file for the fix 0.27; `rm -rf /` risk 3 → deny; `git push --force` risk 2 → ask. Two adjustments from it: approval alone no longer asks below the risk threshold (the scope advisory owns that), and `vcs` / MCP write tools are judged for the security questions.
 
+### After review of 70fb151 (2026-09-21)
+- Shell classification no longer grants `read` by executable name: `aws`, `gh`, `curl`, `wget`, `docker`, `kubectl`, package managers and friends are read only for verified subcommands (`aws s3 ls`, `gh pr view`, `curl` without a method/body/output flag …); everything else they do is `external-write` (judged, security questions on) or a local write. `find -delete` is a write, `find -exec`, `eval`, `source` are scripts.
+- Check outcomes need the host's word: a run with no runner summary is a pass only when the host confirmed success (Claude Code's PostToolUse vs PostToolUseFailure; a numeric exit code on Codex when present) and `unknown` otherwise — `npm test` ending in `Missing script` no longer counts as passing.
+- Working directories are compared by a hash of the resolved path, not by the redacted display string; projects under `$HOME` keep their validity (redundant advisories were silently impossible there).
+- Digests cover the whole tool input (canonical JSON): two edits of one file are two actions, and a shell command keeps its inner whitespace.
+- Ledger appends take the compaction lock, so a compaction can no longer drop a line another process appended between its read and its rename; covered by a four-process test that loses events without the lock.
+
 ## Upstream history (jev-guard, before the fork)
 
 ## 0.3.1 — 2026-09-18

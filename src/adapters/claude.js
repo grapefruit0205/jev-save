@@ -25,6 +25,9 @@ export function toResult(event) {
     failed: failure,
     interrupted: failure ? Boolean(event.is_interrupt) : Boolean(r && typeof r === "object" && r.interrupted),
     output,
+    // Claude Code routes a tool that failed (a non-zero exit included) to PostToolUseFailure, so a PostToolUse
+    // is the host saying the call succeeded.
+    hostSuccess: !failure,
     durationMs: typeof event.duration_ms === "number" ? event.duration_ms : undefined,
   };
 }

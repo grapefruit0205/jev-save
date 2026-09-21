@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assess, recordPrompt, recordResult, settings, shouldJudge } from "../src/core/guard.js";
 import { buildState, projectInput } from "../src/core/context.js";
-import { readEvents, replay, view } from "../src/core/ledger.js";
+import { cwdIdOf, readEvents, replay, view } from "../src/core/ledger.js";
 import { cacheKey, canonical, lookup, store } from "../src/core/cache.js";
 import { failingProvider, mockProvider } from "../src/providers/mock.js";
 
@@ -57,7 +57,7 @@ test("buildState keeps jev-guard's key names and adds the efficiency context", (
   const dir = fresh();
   recordPrompt(sid, "로그인 버그만 고쳐. DB는 건드리지 마.", { dir });
   const state = replay(readEvents(sid, dir));
-  const v = view(state, { digest: "d", cwd: "/repo" });
+  const v = view(state, { digest: "d", cwdId: cwdIdOf("/repo") });
   const st = buildState(act("Bash", { command: "pytest -q" }), { kind: "check", runner: "test" }, v, { home: "/home/u" });
   assert.deepEqual(st.context.user_recent_messages, ["로그인 버그만 고쳐. DB는 건드리지 마."]);
   assert.equal(st.context.original_request, "로그인 버그만 고쳐. DB는 건드리지 마.");
@@ -76,7 +76,7 @@ test("recordPrompt marks host-injected messages as synthetic", () => {
   recordPrompt(sid, "로그인 버그만 고쳐.", { dir });
   const st = replay(readEvents(sid, dir));
   assert.deepEqual(st.prompts.map((p) => p.synthetic), [true, true, false]);
-  assert.equal(view(st, { digest: "d", cwd: "/repo" }).original_request, "로그인 버그만 고쳐.");
+  assert.equal(view(st, { digest: "d", cwdId: cwdIdOf("/repo") }).original_request, "로그인 버그만 고쳐.");
 });
 
 test("canonical JSON is key-order independent, so the cache key is stable", () => {
@@ -161,6 +161,24 @@ test("pipeline: redundant check after a pass with no change is an advisory; afte
   assert.equal(after.emit, null);
 });
 
+test("a project under the home directory keeps its validity: redacted display path vs raw path never compared (review P2)", async () => {
+  const dir = fresh(); const logPath = join(dir, "decisions.jsonl");
+  const provider = mockProvider();
+  const home = "/home/u"; const cwd = "/home/u/proj";
+  recordPrompt(sid, "fix the login bug", { dir, home });
+  const input = { command: "pytest tests/test_auth.py -q" };
+  await assess(act("Bash", input, { id: "c1", cwd }), { provider, dir, logPath, env: {}, home });
+  recordResult(sid, { toolUseId: "c1", tool: "Bash", input, output: "===== 5 passed in 0.3s =====", hostSuccess: true }, { dir });
+  const entry = replay(readEvents(sid, dir)).entries[0];
+  assert.equal(entry.cwd, "~/proj", "displayed redacted");
+  assert.equal(entry.cwd_id, cwdIdOf(cwd), "compared by identity");
+  const rep = await assess(act("Bash", input, { id: "c2", cwd }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" }, home });
+  assert.equal(rep.advisory?.rule, "redundant");
+  assert.equal(rep.emit.kind, "context");
+  const elsewhere = await assess(act("Bash", input, { id: "c3", cwd: "/home/u/other" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" }, home });
+  assert.notEqual(elsewhere.advisory?.rule, "redundant", "a different directory is not the same evidence");
+});
+
 test("recordResult: outcomes from the runner output, failures and interrupts; unknown ids are ignored", () => {
   const dir = fresh();
   recordPrompt(sid, "x", { dir });
@@ -169,6 +187,8 @@ test("recordResult: outcomes from the runner output, failures and interrupts; un
   assert.deepEqual(recordResult(sid, { toolUseId: "b", tool: "Bash", input: { command: "pytest" }, failed: true, output: "Exit code 1" }, { dir }), { kind: "check", result: "fail", exec: "failed" });
   assert.deepEqual(recordResult(sid, { toolUseId: "c", tool: "Bash", input: { command: "pytest" }, interrupted: true }, { dir }), { kind: "check", result: "unknown", exec: "failed" });
   assert.deepEqual(recordResult(sid, { toolUseId: "d", tool: "Edit", input: { file_path: "a" } }, { dir }), { kind: "edit", result: "pass", exec: "completed" });
+  assert.deepEqual(recordResult(sid, { toolUseId: "e", tool: "Bash", input: { command: "npm test" }, output: "npm ERR! Missing script: \"test\"" }, { dir }), { kind: "check", result: "unknown", exec: "completed" }, "Codex-style: no exit status, no summary");
+  assert.deepEqual(recordResult(sid, { toolUseId: "f", tool: "Bash", input: { command: "npm test" }, output: "", hostSuccess: true }, { dir }), { kind: "check", result: "pass", exec: "completed" });
 });
 
 test("fail-open: a provider outage is SKIP and logged; fail-closed denies only in advise mode and only for security-bearing calls", async () => {

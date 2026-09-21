@@ -14,9 +14,22 @@ export function toAction(event) {
   return { ...claude.toAction(event), agent: "codex" };
 }
 
+/** Codex's PostToolUse fires for non-zero exits too, and the documented payload carries no exit status for shell
+ *  commands. If a numeric exit code is present under any of the usual names it is the host's word; otherwise the
+ *  host said nothing (`hostSuccess: null`) and a check without a runner summary stays `unknown`. */
+export function exitCodeOf(response) {
+  if (!response || typeof response !== "object") return null;
+  for (const k of ["exit_code", "exitCode", "exit_status", "exitStatus", "status_code", "returncode", "return_code", "code"]) {
+    if (typeof response[k] === "number") return response[k];
+    if (response.metadata && typeof response.metadata[k] === "number") return response.metadata[k];
+  }
+  return null;
+}
+
 export function toResult(event) {
   const r = claude.toResult(event);
-  return { ...r, failed: false, interrupted: Boolean(event.tool_response && typeof event.tool_response === "object" && event.tool_response.interrupted) };
+  const exit = exitCodeOf(event.tool_response);
+  return { ...r, failed: exit != null && exit !== 0, hostSuccess: exit == null ? null : exit === 0, interrupted: Boolean(event.tool_response && typeof event.tool_response === "object" && event.tool_response.interrupted) };
 }
 
 export function toOutput(result) {

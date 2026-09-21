@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { actionOutcome, classifyAction, digestOf, pathsOf, previewOf, redact } from "./evidence.js";
-import { append, DEFAULT_DIR, readEvents, replay, view } from "./ledger.js";
+import { append, cwdIdOf, DEFAULT_DIR, readEvents, replay, view } from "./ledger.js";
 import { buildState } from "./context.js";
 import { BUNDLE_VERSION, bundle } from "./questions.js";
 import { decide, thresholds } from "./policy.js";
@@ -70,13 +70,14 @@ export async function assess(action, { provider, env = process.env, config = {},
   const preview = previewOf(action.tool, action.input, 120, home);
   const paths = pathsOf(action.tool, action.input).map((p) => redact(p, home));
   const base = { decision: "SKIP", advisory: null, emit: null, signals: {}, cls, digest, judged: false, cached: false, latencyMs: null, mode: s.mode };
-  const pre = (extra) => ({ ev: "pre", turn: 0, tool_use_id: action.toolUseId, tool: action.tool, kind: cls.kind, runner: cls.runner, digest, preview, paths, cwd: redact(String(action.cwd ?? ""), home), mode: s.mode, exec: "running", ...extra });
+  const cwdId = cwdIdOf(action.cwd);
+  const pre = (extra) => ({ ev: "pre", turn: 0, tool_use_id: action.toolUseId, tool: action.tool, kind: cls.kind, runner: cls.runner, digest, preview, paths, cwd: redact(String(action.cwd ?? ""), home), cwd_id: cwdId, mode: s.mode, exec: "running", ...extra });
   const log = (extra) => logDecision({ event: "pre", session: sha(action.sessionId).slice(0, 12), agent: action.agent, tool: action.tool, kind: cls.kind, digest, preview, mode: s.mode, ...extra }, { path: logPath ?? undefined, now });
 
   let state, v;
   try {
     state = replay(readEvents(action.sessionId, dir), { now });
-    v = view(state, { digest, cwd: action.cwd });
+    v = view(state, { digest, cwdId });
   } catch (err) {
     log({ decision: "SKIP", why: "ledger", error: String(err?.message ?? err) });
     return base;
@@ -127,10 +128,10 @@ export async function assess(action, { provider, env = process.env, config = {},
  * Close an entry. `failed` is the host's error flag (PostToolUseFailure, is_error), `interrupted` an
  * abort; `output` is stdout+stderr for the runner parsers. Returns the recorded result.
  */
-export function recordResult(sessionId, { toolUseId, tool, input = {}, failed = false, interrupted = false, output = "", durationMs }, { dir = DEFAULT_DIR(), now = Date.now(), env = process.env } = {}) {
+export function recordResult(sessionId, { toolUseId, tool, input = {}, failed = false, interrupted = false, output = "", hostSuccess = null, durationMs }, { dir = DEFAULT_DIR(), now = Date.now(), env = process.env } = {}) {
   if (!sessionId || !toolUseId) return null;
   const cls = classifyAction(tool, input, env);
-  const result = actionOutcome(cls.kind, { failed, interrupted, output });
+  const result = actionOutcome(cls.kind, { failed, interrupted, output, hostSuccess });
   const exec = failed || interrupted ? "failed" : "completed";
   append(sessionId, { ev: "post", tool_use_id: toolUseId, exec, result, ...(typeof durationMs === "number" ? { duration_ms: durationMs } : {}) }, { dir, now });
   return { kind: cls.kind, result, exec };

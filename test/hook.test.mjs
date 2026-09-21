@@ -23,7 +23,7 @@ test("detectAgent: Codex payloads carry turn_id and model; --agent overrides", (
 
 test("adapters: results from PostToolUse, PostToolUseFailure and Codex; outputs per host", () => {
   const ok = claudeResult(post("Bash", { command: "pytest" }, "u1", { stdout: "5 passed", stderr: "", interrupted: false, isImage: false }));
-  assert.deepEqual(ok, { toolUseId: "u1", tool: "Bash", input: { command: "pytest" }, failed: false, interrupted: false, output: "5 passed\n", durationMs: 1234 });
+  assert.deepEqual(ok, { toolUseId: "u1", tool: "Bash", input: { command: "pytest" }, failed: false, interrupted: false, output: "5 passed\n", hostSuccess: true, durationMs: 1234 });
   const fail = claudeResult({ hook_event_name: "PostToolUseFailure", session_id: sid, tool_name: "Bash", tool_input: { command: "npm test" }, tool_use_id: "u2", error: "Exit code 1\nErr", is_interrupt: false, duration_ms: 10 });
   assert.equal(fail.failed, true); assert.equal(fail.output, "Exit code 1\nErr"); assert.equal(fail.interrupted, false);
   const abort = claudeResult({ hook_event_name: "PostToolUseFailure", session_id: sid, tool_name: "Bash", tool_input: {}, tool_use_id: "u3", error: "aborted", is_interrupt: true });
@@ -31,7 +31,12 @@ test("adapters: results from PostToolUse, PostToolUseFailure and Codex; outputs 
   const write = claudeResult(post("Write", { file_path: "/a" }, "u4", { filePath: "/a", type: "create" }));
   assert.equal(write.output, "/a", "structured results are flattened; the `type` key is skipped as in jev-guard's collectText");
   const cx = codexResult(post("Bash", { command: "pytest" }, "u5", { stdout: "", stderr: "1 failed", interrupted: false }));
-  assert.equal(cx.failed, false, "Codex reports non-zero exits through PostToolUse; the parsers decide");
+  assert.equal(cx.failed, false, "Codex reports non-zero exits through PostToolUse without a status");
+  assert.equal(cx.hostSuccess, null, "so the host said nothing");
+  assert.equal(codexResult(post("Bash", { command: "npm test" }, "u6", { stdout: "", stderr: "Missing script", exit_code: 1 })).hostSuccess, false, "an exit code, when present, is the host's word");
+  assert.equal(codexResult(post("Bash", { command: "npm test" }, "u7", { stdout: "", exitCode: 0 })).hostSuccess, true);
+  assert.equal(codexResult(post("Bash", { command: "npm test" }, "u8", { stdout: "", metadata: { exit_code: 2 } })).failed, true);
+  assert.equal(fail.hostSuccess, false);
 
   assert.equal(claudeOutput({ emit: null }), null);
   assert.deepEqual(claudeOutput({ emit: { kind: "deny", text: "no" } }), { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "no" } });

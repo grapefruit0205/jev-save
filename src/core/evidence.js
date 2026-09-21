@@ -142,10 +142,45 @@ export function checkSummary(output) {
 // Runners belay/pi-warden do not name but this corpus runs: python -m <runner>, unittest, tox/nox,
 // pre-commit, and a few infra linters. Applied to a segment, not to the whole command.
 const EXTRA_CHECK = /^(?:(?:python[0-9.]*|py)\s+-m\s+(?:pytest|unittest|ruff|mypy|pylint|flake8|black|coverage|tox|nox|pyright)\b|unittest\b|tox\b|nox\b|pyright\b|pre-commit\s+run\b|terraform\s+(?:validate|fmt\s+-check|plan)\b|tflint\b|cfn-lint\b|shellcheck\b|hadolint\b|ansible-lint\b|gradlew\s+(?:test|check|build)\b|composer\s+test\b|npm\s+run\s+(?:test|check|lint|typecheck|build|verify|ci)\S*)/;
-const WRITE_HEAD = new Set(["rm", "mv", "cp", "mkdir", "rmdir", "touch", "patch", "tee", "install", "ln", "chmod", "chown", "truncate", "dd", "rsync", "unzip", "tar", "pip", "pip3", "uv", "poetry", "conda", "npm", "pnpm", "yarn", "bun", "cargo", "go", "gem", "bundle", "composer", "brew", "apt", "apt-get", "dnf", "yum", "docker", "kubectl", "helm", "terraform", "make"]);
-const READ_HEAD = new Set(["cat", "head", "tail", "less", "more", "ls", "wc", "jq", "yq", "awk", "cut", "sort", "uniq", "stat", "file", "which", "tree", "column", "diff", "du", "df", "env", "printenv", "pwd", "date", "echo", "printf", "type", "realpath", "basename", "dirname", "true", "test", "[", "sleep", "whoami", "id", "uname", "hostname", "nproc", "free", "ps", "top", "md5sum", "sha256sum", "sha1sum", "base64", "od", "xxd", "hexdump", "strings", "tr", "nl", "tac", "rev", "seq", "expr", "bc", "curl", "wget", "ping", "dig", "nslookup", "gh", "aws", "gcloud", "az"]);
+const WRITE_HEAD = new Set(["rm", "mv", "cp", "mkdir", "rmdir", "touch", "patch", "tee", "install", "ln", "chmod", "chown", "truncate", "dd", "rsync", "unzip", "tar", "conda", "composer", "apt", "apt-get", "dnf", "yum", "shred", "mkfs", "fdisk", "mount", "umount", "crontab", "systemctl", "service"]);
+// Executables that only ever read, whatever their arguments. Anything with subcommands (aws, gh, curl, docker …)
+// is NOT here: `aws s3 rm --recursive` and `gh repo delete` share a head with `aws s3 ls`, so those are judged
+// per verified subcommand below (readVerbOf) and default to a side-effecting kind.
+const READ_HEAD = new Set(["cat", "head", "tail", "less", "more", "ls", "wc", "jq", "yq", "awk", "cut", "sort", "uniq", "stat", "file", "which", "tree", "column", "diff", "du", "df", "env", "printenv", "pwd", "date", "echo", "printf", "type", "realpath", "basename", "dirname", "true", "false", "test", "[", "sleep", "whoami", "id", "uname", "hostname", "nproc", "free", "ps", "top", "md5sum", "sha256sum", "sha1sum", "base64", "od", "xxd", "hexdump", "strings", "tr", "nl", "tac", "rev", "seq", "expr", "bc", "ping", "dig", "nslookup", "host", "uptime", "lsof", "netstat", "ss"]);
 const SEARCH_HEAD = new Set(["grep", "rg", "ag", "find", "fd", "ack", "locate", "fzf"]);
-const NEUTRAL_HEAD = new Set(["cd", "export", "set", "unset", "source", ".", "eval", "wait", "exit", "return", "trap", "shift", "local", "declare", "typeset", "readonly", "alias", "unalias", "pushd", "popd", "ulimit", "umask"]);
+// `eval`, `source` and `.` run arbitrary text and are classified as scripts (other), not as neutral shell state.
+const NEUTRAL_HEAD = new Set(["cd", "export", "set", "unset", "wait", "exit", "return", "trap", "shift", "local", "declare", "typeset", "readonly", "alias", "unalias", "pushd", "popd", "ulimit", "umask", ":"]);
+// Tools with subcommands: the verbs that only read. Everything else those tools do is a side effect outside the
+// tree (external-write: judged, security questions on) unless it obviously writes locally (other).
+const SUBCOMMAND_READ = {
+  gh: /^(?:(?:pr|issue|repo|run|release|workflow|gist|cache|label|milestone|project|codespace|ruleset|secret|variable|ssh-key|gpg-key)\s+(?:view|list|status|diff|checks|watch|ls)\b|(?:status|auth\s+status|browse|search|version|help)\b|api\s+(?!.*(?:-X\s*(?!GET\b)|--method\s*(?!GET\b)|-f\b|-F\b|--field|--raw-field|--input)))/,
+  aws: /^(?:\S+\s+)?(?:describe|list|get|ls|head|show|search|query|lookup|check|validate|wait|help|presign|scan|filter)[\w-]*\b|^sts\s+get-caller-identity|^configure\s+(?:list|get)\b|^s3api\s+(?:list|get|head)|^(?:--version|help)\b/,
+  gcloud: /\b(?:describe|list|get|read|show|search|help|version|info|config\s+list|auth\s+list)\b/,
+  az: /\b(?:show|list|get|version|help|account\s+(?:show|list))\b/,
+  docker: /^(?:ps|images|logs|inspect|version|info|stats|top|port|diff|history|search|context\s+ls|compose\s+(?:ps|logs|config|version))\b/,
+  kubectl: /^(?:get|describe|logs|top|version|api-resources|api-versions|explain|cluster-info|config\s+(?:view|current-context|get-contexts))\b/,
+  helm: /^(?:list|ls|status|get|show|history|version|search|env)\b/,
+  terraform: /^(?:show|output|version|providers|graph|state\s+(?:list|show)|workspace\s+(?:list|show))\b/,
+  npm: /^(?:ls|list|view|info|show|outdated|audit(?!\s+fix)|why|explain|search|ping|whoami|config\s+(?:get|list)|--version|-v|help)\b/,
+  pnpm: /^(?:ls|list|view|info|show|outdated|audit(?!\s+--fix)|why|--version|-v|help)\b/,
+  yarn: /^(?:list|info|why|outdated|audit|--version|-v|help)\b/,
+  bun: /^(?:pm\s+ls|--version|-v|help)\b/,
+  pip: /^(?:show|list|freeze|check|--version|-V|help|index)\b/,
+  pip3: /^(?:show|list|freeze|check|--version|-V|help|index)\b/,
+  uv: /^(?:pip\s+(?:show|list|freeze)|tree|--version|help|lock\s+--check)\b/,
+  poetry: /^(?:show|check|--version|env\s+info|help)\b/,
+  cargo: /^(?:tree|metadata|--version|-V|help|search|info)\b/,
+  go: /^(?:version|env|list|doc|help)\b/,
+  gem: /^(?:list|info|search|--version|-v|help)\b/,
+  bundle: /^(?:show|list|info|check|--version|-v|help)\b/,
+  brew: /^(?:list|ls|info|search|--version|-v|help|deps|leaves|outdated|doctor)\b/,
+  make: /^(?:-n|--dry-run|--version|-v|help)\b/,
+  curl: /^(?!.*(?:-X\s*(?!GET\b|HEAD\b)|--request\s*(?!GET\b|HEAD\b)|(?:^|\s)-[a-zA-Z]*[dFT]\b|--data|--form|--upload-file|--json\b|(?:^|\s)-[a-zA-Z]*[oO]\b|--output\b|--remote-name)).*/,
+  wget: /^(?!.*(?:--post-data|--post-file|--method\s*(?!GET\b)|--body-data|--body-file)).*(?:--spider|-q\s*-O-|-O\s*-|-qO-|--output-document=-|-O\s*\/dev\/stdout)/,
+};
+// Subcommand tools whose non-read use writes the local tree rather than a remote (a change, not a side effect).
+const SUBCOMMAND_LOCAL_WRITE = new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv", "poetry", "cargo", "go", "gem", "bundle", "brew", "make", "docker", "terraform", "wget"]);
+const LOCAL_COPY = { aws: /^s3\s+(?:cp|sync|mv)\b/, gcloud: /\bstorage\s+(?:cp|rsync)\b|\bscp\b/, az: /\bstorage\s+blob\s+download/, curl: /(?:^|\s)-[a-zA-Z]*[oO]\b|--output\b|--remote-name/ };
 const WRAPPERS = new Set(["sudo", "time", "env", "nice", "nohup", "timeout", "command", "exec", "xargs", "watch", "caffeinate", "stdbuf", "unbuffer"]);
 const GIT_READ_SUB = new Set(["log", "diff", "status", "show", "blame", "describe", "ls-files", "ls-tree", "rev-parse", "rev-list", "cat-file", "shortlog", "reflog", "grep", "branch", "tag", "remote", "config", "stash", "worktree", "fetch", "version", "help", "check-ignore", "for-each-ref", "name-rev", "merge-base"]);
 const GIT_VCS_SUB = new Set(["commit", "add", "push", "notes", "rm", "mv"]);
@@ -222,18 +257,23 @@ function classifySegment(segment, env) {
     if (GIT_VCS_SUB.has(sub)) return { kind: "vcs" };
     return { kind: "write" };   // checkout, switch, reset, rebase, merge, pull, restore, clean, apply, am, clone …
   }
+  if (head === "find" && /(^|\s)-(?:delete|exec|execdir|ok|okdir|fprint\w*)\b/.test(rest)) return { kind: /-delete\b/.test(rest) && !/-exec/.test(rest) ? "write" : "other" };
   if (SEARCH_HEAD.has(head)) return { kind: "search" };
   if (READ_HEAD.has(head)) return { kind: "read" };
+  if (head === "eval" || head === "source" || head === ".") return { kind: "other" };
   if (CHECK_COMMAND.test(body) || EXTRA_CHECK.test(body) || extraCheck(env)?.test(segment) === true) {
     // `npm install`, `cargo add`, `go get`, `pip install` share a head with runners; the runner regexes
     // only match the verb forms, so a package-manager segment that did not match above is a write.
     return { kind: "check", runner: runnerKind(body) ?? (/(?:lint|typecheck|ruff|mypy|pylint|flake8|black|pyright|tflint|cfn-lint|shellcheck|hadolint|ansible-lint|terraform\s+(?:validate|fmt))\b/.test(body) ? "lint" : /\b(?:build)\b/.test(body) ? "build" : "test") };
   }
-  if (WRITE_HEAD.has(head)) return { kind: "write" };
-  if (head === "python" || head === "python3" || head === "node" || head === "ruby" || head === "perl" || head === "php" || head === "bash" || head === "sh" || head === "zsh") {
-    return { kind: "other" };   // a script: could do anything, so it counts as a change
+  if (head in SUBCOMMAND_READ) {
+    const r = rest.trim();
+    if (LOCAL_COPY[head]?.test(r)) return { kind: "write" };                       // downloads into the tree
+    if (SUBCOMMAND_READ[head].test(r)) return { kind: "read" };
+    return { kind: SUBCOMMAND_LOCAL_WRITE.has(head) ? "write" : "external-write" };   // aws s3 rm, gh repo delete, curl -X DELETE …
   }
-  return { kind: "other" };
+  if (WRITE_HEAD.has(head)) return { kind: "write" };
+  return { kind: "other" };   // a script (python, node, sh …), an unknown tool: could do anything, so it counts as a change
 }
 
 const MCP_READ_VERBS = new Set(["get", "list", "search", "fetch", "read", "query", "find", "describe", "status", "show", "lookup", "check", "view", "count", "resolve", "validate"]);
@@ -278,6 +318,7 @@ export function classifyAction(tool, input = {}, env = process.env) {
   const check = kinds.find((c) => c.kind === "check");
   if (has("write") || (hadHeredoc && !check)) return { kind: "write-bash", command };
   if (has("other")) return { kind: "other", command };
+  if (has("external-write")) return { kind: "external-write", command };
   if (check) return { kind: "check", runner: check.runner, command };
   if (has("vcs")) return { kind: "vcs", command };
   if (has("search")) return { kind: "search", command };
@@ -286,25 +327,27 @@ export function classifyAction(tool, input = {}, env = process.env) {
 }
 
 /**
- * The verdict of a finished check. Claude Code records a runner's nonzero exit with no exit code (its
- * Bash result carries stdout, stderr, interrupted, isImage only), so belt 2 speaks before belt 1: a
- * summary that says "fail" wins, `failed` (host error / interrupt) wins, a named runner with a clean
- * summary or no summary at all is a pass, and a check we could not read is `unknown`.
+ * The verdict of a finished check. Two sources, in order: the runner's own summary line in the output
+ * (belt 2), and the host's success signal (`hostSuccess`: Claude Code's PostToolUse vs PostToolUseFailure, or an
+ * exit code when the host reports one; `null` when the host says nothing, as Codex does for a shell command).
+ * A summary saying "fail" or a host saying "failed" is a fail. A summary saying "pass" is a pass. No summary at
+ * all is a pass only when the host confirmed success — otherwise `unknown`, which never becomes evidence
+ * (`npm test` ending in `Missing script: "test"` must not count as a passing test run).
  * @returns {'pass'|'fail'|'unknown'}
  */
-export function checkOutcome({ failed = false, interrupted = false, output = "" } = {}) {
+export function checkOutcome({ failed = false, interrupted = false, output = "", hostSuccess = null } = {}) {
   if (interrupted) return "unknown";
   const summary = checkSummary(output);
-  if (summary === "fail" || failed) return "fail";
+  if (summary === "fail" || failed || hostSuccess === false) return "fail";
   if (summary === "pass") return "pass";
-  return failed ? "fail" : "pass";
+  return hostSuccess === true ? "pass" : "unknown";
 }
 
 /** Outcome of any action from its result envelope. Edits and reads pass unless the host reported an error. */
-export function actionOutcome(kind, { failed = false, interrupted = false, output = "" } = {}) {
-  if (kind === "check") return checkOutcome({ failed, interrupted, output });
+export function actionOutcome(kind, { failed = false, interrupted = false, output = "", hostSuccess = null } = {}) {
+  if (kind === "check") return checkOutcome({ failed, interrupted, output, hostSuccess });
   if (interrupted) return "unknown";
-  return failed ? "fail" : "pass";
+  return failed || hostSuccess === false ? "fail" : "pass";
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +355,13 @@ export function actionOutcome(kind, { failed = false, interrupted = false, outpu
 // (that is the host's tool_use_id).
 
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+
+/** Deterministic JSON: object keys sorted at every level. Shared by digests and the answer cache. */
+export function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(",")}}`;
+  return JSON.stringify(value ?? null);
+}
 
 export function pathsOf(tool, input = {}) {
   const name = String(tool ?? "").toLowerCase();
@@ -321,16 +371,17 @@ export function pathsOf(tool, input = {}) {
   return [];
 }
 
-/** Stable identity of an action for repeat detection. */
+/**
+ * Stable identity of an action for repeat detection: the tool name plus the *whole* input, canonicalized.
+ * Two edits of the same file with different content are different actions; a shell command keeps its inner
+ * whitespace (quoted arguments mean something) and loses only the surrounding whitespace. File contents are
+ * hashed locally and never leave the machine.
+ */
 export function digestOf(tool, input = {}) {
   const name = String(tool ?? "").toLowerCase();
   let identity;
-  if (name === "bash" || name === "shell" || name === "apply_patch") identity = norm(input?.command);
-  else if (EDIT_TOOLS.has(name)) identity = norm(input?.file_path ?? input?.path ?? input?.filePath);
-  else if (name === "read" || name === "notebookread") identity = `${norm(input?.file_path ?? input?.path)}:${input?.offset ?? ""}:${input?.limit ?? ""}`;
-  else if (name === "grep") identity = `${norm(input?.pattern)}|${norm(input?.path)}|${norm(input?.glob)}|${norm(input?.type)}`;
-  else if (name === "glob") identity = `${norm(input?.pattern)}|${norm(input?.path)}`;
-  else identity = norm(JSON.stringify(input ?? {}));
+  if (name === "bash" || name === "shell") identity = String(input?.command ?? "").trim();
+  else identity = canonical(input ?? {});
   return createHash("sha256").update(`${name}\n${identity}`).digest("hex").slice(0, 16);
 }
 

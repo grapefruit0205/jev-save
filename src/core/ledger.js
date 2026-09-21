@@ -2,15 +2,17 @@
 //
 // Every hook invocation is a separate process, and Claude Code runs matching hooks in parallel, so the
 // store must survive concurrent writers. Appending one short line with O_APPEND is atomic on every
-// platform we care about; nobody ever reads-modifies-writes the file. The only rewrite is compaction, which
-// takes an exclusive lock (mkdir) and replaces the file atomically. Readers replay the file into entries.
+// platform we care about; nobody ever reads-modifies-writes the file. The only rewrite is compaction, and
+// it runs under the same mkdir lock every append takes, so "A reads, B appends, A renames" cannot lose B's
+// line (review P2). An append that cannot get the lock within 500 ms proceeds anyway — a hook must not hang —
+// and simply skips compaction. Readers replay the file into entries.
 //
 // Design: docs/design.md §4 (v0.2) and the v0.3 note. Replaces jev-guard's session.js for the guard path;
 // session.js stays for the adapters that still use it.
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import "./types.js";
 
 export const DEFAULT_DIR = () => process.env.JEV_SAVE_SESSIONS ?? join(homedir(), ".jev-save", "sessions");
@@ -19,10 +21,18 @@ const COMPACT_AT = 2 * 1024 * 1024;
 const KEEP_EVENTS = 400;
 const KEEP_PROMPTS = 20;
 const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_MS = 500;
 const UNKNOWN_AFTER_MS = 10 * 60_000;
 const CHANGE_KINDS = new Set(["edit", "write-bash", "other"]);
 const CLIP_PROMPT = 1500;
 const CLIP_INSTRUCTION = 300;
+
+/** Identity of a working directory for comparison: a hash of the resolved absolute path. The redacted path
+ *  (`~/repo`) is for display only and must never be compared with a raw one (review P2). */
+export function cwdIdOf(cwd) {
+  if (!cwd) return "";
+  return createHash("sha1").update(resolve(String(cwd))).digest("hex").slice(0, 12);
+}
 
 export function sessionPath(sessionId, dir = DEFAULT_DIR()) {
   return join(dir, createHash("sha1").update(String(sessionId)).digest("hex").slice(0, 16) + ".jsonl");
@@ -39,23 +49,41 @@ export function append(sessionId, event, { dir = DEFAULT_DIR(), now = Date.now()
     if (Array.isArray(record.paths)) record.paths = record.paths.slice(0, 20);
     line = JSON.stringify(record) + "\n";
   }
+  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { return false; }
+  const lock = path + ".lock";
+  const locked = acquire(lock);
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const fd = openSync(path, "a", 0o600);
     try { writeSync(fd, line); } finally { closeSync(fd); }
+    if (locked) { try { if (statSync(path).size > COMPACT_AT) compact(path); } catch { /* compaction is best effort */ } }
   } catch { return false; }
-  try { if (statSync(path).size > COMPACT_AT) compact(path, now); } catch { /* compaction is best effort */ }
+  finally { if (locked) release(lock); }
   return true;
 }
 
-/** Keep the last KEEP_EVENTS events and the last KEEP_PROMPTS prompts; a `post` whose `pre` was dropped is kept anyway (harmless). */
-function compact(path, now) {
-  const lock = path + ".lock";
-  try { mkdirSync(lock); }
-  catch {
-    try { if (now - statSync(lock).mtimeMs < LOCK_STALE_MS) return; rmdirSync(lock); mkdirSync(lock); } catch { return; }
+/** mkdir is atomic on every platform: whoever creates the directory holds the lock. A lock older than
+ *  LOCK_STALE_MS belongs to a dead process and is taken over. Returns false when the wait ran out. */
+function acquire(lock) {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try { mkdirSync(lock); return true; }
+    catch (err) {
+      if (err?.code !== "EEXIST") return false;
+      let stale;
+      try { stale = Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS; } catch { continue; }   // vanished between calls: retry at once
+      if (stale) { try { rmdirSync(lock); } catch { /* someone else did */ } continue; }
+      if (Date.now() >= deadline) return false;
+      sleepSync(3);
+    }
   }
-  try {
+}
+function release(lock) { try { rmdirSync(lock); } catch { /* already gone */ } }
+function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+
+/** Keep the last KEEP_EVENTS events and the last KEEP_PROMPTS prompts; a `post` whose `pre` was dropped is
+ *  kept anyway (harmless). Called with the lock held. */
+function compact(path) {
+  {
     const events = parse(readFileSync(path, "utf8"));
     const prompts = events.filter((e) => e.ev === "prompt").slice(-KEEP_PROMPTS);
     const rest = [];   // newest first, bounded by count and by bytes so the file really shrinks
@@ -69,7 +97,7 @@ function compact(path, now) {
     const tmp = path + ".tmp";
     writeFileSync(tmp, kept.map((e) => JSON.stringify(e)).join("\n") + "\n", { mode: 0o600 });
     renameSync(tmp, path);
-  } finally { try { rmdirSync(lock); } catch { /* ignore */ } }
+  }
 }
 
 function parse(text) {
@@ -104,7 +132,7 @@ export function replay(events, { now = Date.now() } = {}) {
     } else if (e.ev === "pre") {
       const entry = {
         seq: ++seq, turn: prompts.length, tool_use_id: String(e.tool_use_id ?? `seq-${seq}`), tool: String(e.tool ?? ""), kind: e.kind ?? "other",
-        runner: e.runner, digest: String(e.digest ?? ""), preview: String(e.preview ?? ""), paths: Array.isArray(e.paths) ? e.paths : [], cwd: String(e.cwd ?? ""),
+        runner: e.runner, digest: String(e.digest ?? ""), preview: String(e.preview ?? ""), paths: Array.isArray(e.paths) ? e.paths : [], cwd: String(e.cwd ?? ""), cwd_id: String(e.cwd_id ?? ""),
         decision: e.decision ?? "SKIP", judged: Boolean(e.judged), advised: Boolean(e.advised),
         exec: e.exec === "blocked" ? "blocked" : "running", result: null,
         started_at: e.at ?? 0, ended_at: null, duration_ms: null,
@@ -133,13 +161,13 @@ export function replay(events, { now = Date.now() } = {}) {
  * git fingerprint (deferred with enforcement), which is why this can only ever be an upper bound.
  * @returns {{validity:'valid'|'stale'|'unknown'|'none', lastPassSeq:number|null, changed:string[], unknown:boolean}}
  */
-export function validityOf(entries, digest, cwd) {
+export function validityOf(entries, digest, cwdId) {
   let last = null;
   for (const e of entries) if (e.digest === digest && e.exec === "completed" && e.result === "pass") last = e;
   if (!last) return { validity: "none", lastPassSeq: null, changed: [], unknown: false };
   const after = entries.filter((e) => e.seq > last.seq);
   const changed = after.filter((e) => CHANGE_KINDS.has(e.kind) && e.exec !== "blocked").map((e) => e.paths[0] ?? e.preview);
-  const unknown = after.some((e) => e.exec === "unknown") || (cwd != null && last.cwd && cwd !== last.cwd);
+  const unknown = after.some((e) => e.exec === "unknown") || (Boolean(cwdId) && Boolean(last.cwd_id) && cwdId !== last.cwd_id);
   const validity = changed.length ? "stale" : unknown ? "unknown" : "valid";
   return { validity, lastPassSeq: last.seq, changed, unknown };
 }
@@ -149,12 +177,12 @@ export function validityOf(entries, digest, cwd) {
  * `digest`, `kind`, `cwd`). Does not mutate anything.
  * @returns {View}
  */
-export function view(state, { digest, cwd } = {}) {
+export function view(state, { digest, cwdId } = {}) {
   const { turn, prompts, entries } = state;
   const thisTurn = entries.filter((e) => e.turn === turn);
   const same = thisTurn.filter((e) => e.digest === digest);
   const lastOfAction = [...entries].reverse().find((e) => e.digest === digest && (e.exec === "completed" || e.exec === "failed" || e.exec === "unknown"));
-  const v = validityOf(entries, digest, cwd);
+  const v = validityOf(entries, digest, cwdId);
   const kinds = { read: 0, search: 0, check: 0, edit: 0 };
   for (const e of thisTurn) if (e.kind in kinds) kinds[e.kind]++; else if (e.kind === "write-bash") kinds.edit++;
   const advisedIdx = thisTurn.map((e, i) => (e.advised ? i : -1)).filter((i) => i >= 0);

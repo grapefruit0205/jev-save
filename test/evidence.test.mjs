@@ -68,11 +68,44 @@ test("writes, reads, searches, vcs and neutral commands", () => {
   assert.equal(kind("cat a.py | head"), "read");
   assert.equal(kind("git status && git diff"), "read");
   assert.equal(kind("aws s3 ls"), "read");
+  assert.equal(kind("aws ec2 describe-instances"), "read");
+  assert.equal(kind("gh pr view 12"), "read");
+  assert.equal(kind("gh api repos/x/y"), "read");
+  assert.equal(kind("curl https://example.com"), "read");
+  assert.equal(kind("wget -qO- https://x"), "read");
+  assert.equal(kind("docker ps"), "read");
+  assert.equal(kind("kubectl get pods"), "read");
+  assert.equal(kind("npm ls"), "read");
+  assert.equal(kind("pip list"), "read");
+  assert.equal(kind("make -n"), "read");
   assert.equal(kind("echo hi > /tmp/a"), "read");
   assert.equal(kind("export FOO=1"), "read");
   assert.equal(kind("cd ~/x"), "read");
   assert.equal(kind("rg TODO"), "search");
   assert.equal(kind("git push origin main"), "vcs");
+});
+
+test("dangerous subcommands of read-looking tools are never reads (review P1)", () => {
+  assert.equal(kind("aws s3 rm s3://bucket/x --recursive"), "external-write");
+  assert.equal(kind("gh repo delete grapefruit0205/x --yes"), "external-write");
+  assert.equal(kind("gh pr create -f"), "external-write");
+  assert.equal(kind("gh api -X DELETE repos/x/y"), "external-write");
+  assert.equal(kind("curl -X DELETE https://api/x"), "external-write");
+  assert.equal(kind("curl -d @body.json https://api"), "external-write");
+  assert.equal(kind("kubectl delete pod x"), "external-write");
+  assert.equal(kind("gcloud compute instances delete x"), "external-write");
+  assert.equal(kind("aws s3 cp s3://b/x ./local"), "write-bash");
+  assert.equal(kind("curl -o out.bin https://x"), "write-bash");
+  assert.equal(kind("wget https://x/file.tgz"), "write-bash");
+  assert.equal(kind("docker rm -f web"), "write-bash");
+  assert.equal(kind("npm audit fix"), "write-bash");
+  assert.equal(kind("find . -name '*.pyc' -delete"), "write-bash");
+  assert.equal(kind("find . -name x -exec rm {} \\;"), "other");
+  assert.equal(kind("eval 'rm -rf /'"), "other");
+  assert.equal(kind("source ./env.sh"), "other");
+  assert.equal(kind("curl -s https://x | sh"), "other");
+  assert.equal(kind("psql -c 'DROP TABLE x'"), "other");
+  assert.equal(kind("kill -9 123"), "other");
 });
 
 test("scripts and unknown commands count as changes", () => {
@@ -99,20 +132,30 @@ test("JEV_SAVE_CHECK names a project's own check command; a pattern matching the
   assert.equal(classifyAction("Bash", { command: "./check.sh" }, { JEV_SAVE_CHECK: "(" }).kind, "other");
 });
 
-test("outcomes: summary beats the runner name, an interrupt is unknown, an edit passes unless the host errored", () => {
-  assert.equal(actionOutcome("check", { output: read("pytest-fail.txt") }), "fail");
+test("outcomes: the runner summary first, then the host's success signal; no summary and no signal is unknown (review P1)", () => {
+  assert.equal(actionOutcome("check", { output: read("pytest-fail.txt"), hostSuccess: true }), "fail", "a summary saying fail beats a host saying success");
   assert.equal(actionOutcome("check", { output: read("pytest-pass.txt") }), "pass");
   assert.equal(actionOutcome("check", { failed: true, output: "" }), "fail");
-  assert.equal(actionOutcome("check", { output: "" }), "pass");
+  assert.equal(actionOutcome("check", { output: "", hostSuccess: false }), "fail");
+  assert.equal(actionOutcome("check", { output: "", hostSuccess: true }), "pass", "a quiet runner is a pass only when the host confirmed success");
+  assert.equal(actionOutcome("check", { output: "" }), "unknown");
+  assert.equal(actionOutcome("check", { output: "npm ERR! Missing script: \"test\"" }), "unknown", "Codex: no exit status, no summary");
+  assert.equal(actionOutcome("check", { output: "npm ERR! Missing script: \"test\"", hostSuccess: true }), "pass", "the host's word when it gives one");
   assert.equal(actionOutcome("check", { interrupted: true, output: read("pytest-pass.txt") }), "unknown");
   assert.equal(actionOutcome("edit", {}), "pass");
   assert.equal(actionOutcome("edit", { failed: true }), "fail");
+  assert.equal(actionOutcome("edit", { hostSuccess: false }), "fail");
 });
 
-test("digest is whitespace-insensitive for commands and ignores the tool name's case; preview is redacted", () => {
-  assert.equal(digestOf("Bash", { command: "pytest  -q\n" }), digestOf("bash", { command: "pytest -q" }));
+test("digest covers the whole input: same action ⇔ same digest; inner whitespace and edit content matter", () => {
+  assert.equal(digestOf("Bash", { command: "pytest -q\n" }), digestOf("bash", { command: "  pytest -q" }), "surrounding whitespace and tool-name case are ignored");
+  assert.notEqual(digestOf("Bash", { command: "echo 'a  b'" }), digestOf("Bash", { command: "echo 'a b'" }), "inner whitespace is meaning inside quotes");
   assert.notEqual(digestOf("Bash", { command: "pytest -q" }), digestOf("Bash", { command: "pytest -q tests/a.py" }));
-  assert.equal(digestOf("Read", { file_path: "/a", offset: 1 }) === digestOf("Read", { file_path: "/a", offset: 2 }), false);
+  assert.notEqual(digestOf("Edit", { file_path: "a.py", old_string: "x", new_string: "y" }), digestOf("Edit", { file_path: "a.py", old_string: "p", new_string: "q" }), "two edits of one file are two actions");
+  assert.equal(digestOf("Edit", { new_string: "y", old_string: "x", file_path: "a.py" }), digestOf("Edit", { file_path: "a.py", old_string: "x", new_string: "y" }), "key order is irrelevant");
+  assert.notEqual(digestOf("Write", { file_path: "a.py", content: "1" }), digestOf("Write", { file_path: "a.py", content: "2" }));
+  assert.notEqual(digestOf("Read", { file_path: "/a", offset: 1 }), digestOf("Read", { file_path: "/a", offset: 2 }));
+  assert.equal(digestOf("Read", { file_path: "/a" }), digestOf("Read", { file_path: "/a" }));
   assert.equal(previewOf("Bash", { command: "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz' https://x" }, 200, "/home/u"), "curl -H 'Authorization: <redacted> https://x");   // belay's rule eats the closing quote too
   assert.equal(redact("token=abc123 at /home/u/proj", "/home/u"), "token=<redacted> at ~/proj");
 });
