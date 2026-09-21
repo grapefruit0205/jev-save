@@ -70,9 +70,14 @@ export function decide(answers, view, cls, t = thresholds(), { securityMode = "o
   } else if (needed != null && needed <= t.neededP && answers.kind?.choice === "stale") {
     fired.push("stale");
     advisory = { rule: "stale", text: `jev-save: this works on a request that looks finished or superseded (needed p=${round(needed)}). The current request is «${clip(request ?? "", 80)}».` };
-  } else if (needed != null && needed <= t.neededP && request) {
+  } else if (needed != null && needed <= t.neededP && request && answers.kind?.choice === "expansion") {
+    // scope needs the two answers to agree: a low `needed` with kind=auxiliary was every v0.4 false positive
+    // (transcript reads during a review, 0.09–0.14), while every genuine expansion in the probe carried
+    // kind=expansion. Same lesson as v0.3's in_scope/scope_expansion agreement rule.
     fired.push("scope");
     advisory = { rule: "scope", text: `jev-save: this looks outside what the user asked for «${clip(request, 80)}» (needed p=${round(needed)}). Keep to the request, or ask before widening it.` };
+  } else if (needed != null && needed <= t.neededP) {
+    fired.push("needed-low:no-advisory");   // recorded for the scorecard; kind did not say expansion or stale
   } else if (view.validity === "valid" && view.last_outcome_of_this_action === "pass" && view.last_pass_seq != null && (view.same_action_count_since_last_prompt ?? 0) >= 1 && !clearlyPermitted) {
     // a fact, not an interpretation: the same action already passed since the user last spoke and nothing
     // observed changed. Unless the user asked for the rerun.

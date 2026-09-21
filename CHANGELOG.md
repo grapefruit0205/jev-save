@@ -2,6 +2,11 @@
 
 ## jev-save
 
+### Labeling round 1 (2026-09-21)
+- Nine `scope` advisories labeled: 0 right, 7 wrong, 2 unsure. Causes: three from v0.3's stale request context (the user had approved the work turns earlier — e.g. "terminate the two stopped instances" listed by the agent, user said 부탁할게), one from a terminal echo taken as the request, four from v0.4 where `needed` was low (0.09–0.14) while `kind` said `auxiliary` (transcript reads that *were* the review).
+- Scope now requires the two answers to agree: `needed` ≤ 0.25 *and* `kind` = `expansion`. Replayed on the log, all four v0.4 false positives fall silent; the probe's genuine expansions (migration, unrelated refactor, RDS replica) all carried `kind=expansion` and still fire. A low `needed` without agreement is recorded as `needed-low:no-advisory` for the scorecard.
+- `review` shows the v0.4 signals.
+
 ### Redesign: the user's words go to Jev as they were said (2026-09-21)
 - Jev now reads the session as a conversation — every real user utterance verbatim, every agent action as one line, in order, tail-capped at ~6k tokens — and answers three questions about the proposed call: `forbidden` (did the user say not to, and not since allow it), `needed` (does the current request still need this), `permitted` (did the user's own words ask for exactly this). No classifier decides what the user meant. Question bundle 3; jev-guard's `user_requested` is replaced by `permitted`.
 - Live probe, 13/13: prohibition, lifting, exception ("except secrets.ts"), revocation, a request that moved on, a pasted instruction, reading vs deleting. Through the real hook, 6/6.

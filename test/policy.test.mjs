@@ -65,6 +65,10 @@ test("stale and scope: low needed, split by Jev's kind, quoting the current requ
   const scope = decide(intent({ needed: { p: 0.08 }, kind: { choice: "expansion" } }), view(), { kind: "edit" }, t);
   assert.equal(scope.advisory.rule, "scope");
   assert.match(scope.advisory.text, /outside what the user asked for «로그인 버그만 고쳐/);
+  const disagree = decide(intent({ needed: { p: 0.09 }, kind: { choice: "auxiliary" } }), view(), { kind: "read" }, t);
+  assert.equal(disagree.advisory, null, "low needed with kind=auxiliary is not scope (every v0.4 false positive)");
+  assert.deepEqual(disagree.fired, ["needed-low:no-advisory"]);
+  assert.equal(decide(intent({ needed: { p: 0.09 }, kind: { choice: "progress" } }), view(), { kind: "edit" }, t).advisory, null);
   assert.equal(decide(intent({ needed: { p: 0.26 }, kind: { choice: "expansion" } }), view(), { kind: "edit" }, t).advisory, null);
   assert.equal(decide(intent({ needed: { p: 0.08 }, kind: { choice: "expansion" } }), view({ current_request: null, original_request: null }), { kind: "edit" }, t).advisory, null, "no request, no scope judgment");
 });
