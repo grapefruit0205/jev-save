@@ -1,16 +1,16 @@
 // The session ledger: what the hooks observed, one JSON line per event, append-only.
 //
 // Every hook invocation is a separate process, and Claude Code runs matching hooks in parallel, so the
-// store must survive concurrent writers. Appending one short line with O_APPEND is atomic on every
-// platform we care about; nobody ever reads-modifies-writes the file. The only rewrite is compaction, and
+// store must survive concurrent writers. Appends use O_APPEND while holding an exclusive lock.
+// The only rewrite is compaction, and
 // it runs under the same mkdir lock every append takes, so "A reads, B appends, A renames" cannot lose B's
-// line (review P2). An append that cannot get the lock within 500 ms proceeds anyway — a hook must not hang —
-// and simply skips compaction. Readers replay the file into entries.
+// line. A timed-out writer never touches the active log; it marks the session's coverage as uncertain.
+// Readers replay the file into entries. Compaction preserves session metadata independently of the tail.
 //
 // Design: docs/design.md §4 (v0.2) and the v0.3 note. Replaces jev-guard's session.js for the guard path;
 // session.js stays for the adapters that still use it.
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import "./types.js";
@@ -20,7 +20,6 @@ const MAX_LINE = 8 * 1024;
 const COMPACT_AT = 2 * 1024 * 1024;
 const KEEP_EVENTS = 400;
 const KEEP_PROMPTS = 20;
-const LOCK_STALE_MS = 30_000;
 const LOCK_WAIT_MS = 500;
 const UNKNOWN_AFTER_MS = 10 * 60_000;
 const CHANGE_KINDS = new Set(["edit", "write-bash", "other"]);
@@ -52,32 +51,55 @@ export function append(sessionId, event, { dir = DEFAULT_DIR(), now = Date.now()
   try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { return false; }
   const lock = path + ".lock";
   const locked = acquire(lock);
+  if (!locked) { markGap(path); return false; }
   try {
-    const fd = openSync(path, "a", 0o600);
-    try { writeSync(fd, line); } finally { closeSync(fd); }
-    if (locked) { try { if (statSync(path).size > COMPACT_AT) compact(path); } catch { /* compaction is best effort */ } }
-  } catch { return false; }
-  finally { if (locked) release(lock); }
+    writeLine(path, line);
+    try { if (statSync(path).size > COMPACT_AT) compact(path); } catch { /* compaction is best effort */ }
+  } catch { markGap(path); return false; }
+  finally { release(lock); }
   return true;
 }
 
-/** mkdir is atomic on every platform: whoever creates the directory holds the lock. A lock older than
- *  LOCK_STALE_MS belongs to a dead process and is taken over. Returns false when the wait ran out. */
+function writeLine(path, line) {
+  const fd = openSync(path, "a", 0o600);
+  try { writeFileSync(fd, line); } finally { closeSync(fd); }
+}
+
+// Sticky for the lifetime of this session: a missed edit cannot be reconstructed from later successes.
+function markGap(path) {
+  try { writeFileSync(path + ".uncertain", "coverage gap\n", { mode: 0o600 }); } catch { /* best effort */ }
+}
+
+/** Reserve one provider invocation before network I/O, atomically across hook processes. Failures consume it. */
+export function reserveCall(sessionId, { limit = 200, dir = DEFAULT_DIR(), now = Date.now() } = {}) {
+  if (!sessionId) return { ok: false, why: "ledger" };
+  const path = sessionPath(sessionId, dir), lock = path + ".lock";
+  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { return { ok: false, why: "ledger" }; }
+  if (!acquire(lock)) { markGap(path); return { ok: false, why: "ledger" }; }
+  try {
+    const state = replay(readEvents(sessionId, dir), { now });
+    if (state.coverageUnknown) return { ok: false, why: "ledger" };
+    if (state.attempts >= Math.max(0, limit)) return { ok: false, why: "budget" };
+    writeLine(path, JSON.stringify({ v: 1, at: now, ev: "attempt" }) + "\n");
+    return { ok: true };
+  } catch { markGap(path); return { ok: false, why: "ledger" }; }
+  finally { release(lock); }
+}
+
+/** Never steal a lock based on age: a paused writer may still own it. An orphaned lock disables evidence
+ *  for this session until the user removes it after stopping the host; the tool itself still fails open. */
 function acquire(lock) {
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     try { mkdirSync(lock); return true; }
     catch (err) {
       if (err?.code !== "EEXIST") return false;
-      let stale;
-      try { stale = Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS; } catch { continue; }   // vanished between calls: retry at once
-      if (stale) { try { rmdirSync(lock); } catch { /* someone else did */ } continue; }
       if (Date.now() >= deadline) return false;
       sleepSync(3);
     }
   }
 }
-function release(lock) { try { rmdirSync(lock); } catch { /* already gone */ } }
+function release(lock) { try { rmdirSync(lock); } catch { /* best effort */ } }
 function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
 /** Keep the last KEEP_EVENTS events and the last KEEP_PROMPTS prompts; a `post` whose `pre` was dropped is
@@ -85,17 +107,22 @@ function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 
 function compact(path) {
   {
     const events = parse(readFileSync(path, "utf8"));
+    const state = replay(events);
     const prompts = events.filter((e) => e.ev === "prompt").slice(-KEEP_PROMPTS);
     const rest = [];   // newest first, bounded by count and by bytes so the file really shrinks
     let bytes = 0;
     for (let i = events.length - 1; i >= 0 && rest.length < KEEP_EVENTS && bytes < COMPACT_AT / 2; i--) {
-      if (events[i].ev === "prompt") continue;
+      if (["prompt", "snapshot", "attempt"].includes(events[i].ev)) continue;
       rest.push(events[i]);
       bytes += JSON.stringify(events[i]).length + 1;
     }
-    const kept = [...prompts, ...rest.reverse()].sort((a, b) => a.at - b.at || 0);
+    // Preserve append order, not timestamps captured before a slow provider call.
+    const selected = new Set([...prompts, ...rest]);
+    const kept = events.filter((e) => selected.has(e)).map((e) => e.ev === "pre" ? { ...e, attempt_recorded: true } : e);
+    const snapshot = { v: 1, ev: "snapshot", attempts: state.attempts, original_request: state.original_request,
+      turn_offset: state.turn - prompts.length, seq_offset: state.seq - kept.filter((e) => e.ev === "pre").length };
     const tmp = path + ".tmp";
-    writeFileSync(tmp, kept.map((e) => JSON.stringify(e)).join("\n") + "\n", { mode: 0o600 });
+    writeFileSync(tmp, [snapshot, ...kept].map((e) => JSON.stringify(e)).join("\n") + "\n", { mode: 0o600 });
     renameSync(tmp, path);
   }
 }
@@ -110,34 +137,46 @@ function parse(text) {
 }
 
 export function readEvents(sessionId, dir = DEFAULT_DIR()) {
-  try { return parse(readFileSync(sessionPath(sessionId, dir), "utf8")); } catch { return []; }
+  const path = sessionPath(sessionId, dir);
+  let events;
+  try { events = parse(readFileSync(path, "utf8")); }
+  catch (e) { events = e.code === "ENOENT" ? [] : [{ ev: "gap" }]; }
+  if (existsSync(path + ".uncertain")) events.push({ ev: "gap" });
+  return events;
 }
 
 /**
  * Replay the events into a session state. `pre` events become entries; `post` events complete them.
  * A `pre` still `running` when a later prompt arrived, or older than 10 minutes, is reconciled to
  * `unknown` — the host never told us how it ended, so it is not evidence of anything.
- * @returns {{turn:number, prompts:{turn:number,text:string,digest:string,at:number}[], entries:LedgerEntry[]}}
+ * @returns {{turn:number, seq:number, attempts:number, original_request:string|null, coverageUnknown:boolean, prompts:{turn:number,text:string,digest:string,at:number,synthetic:boolean}[], entries:LedgerEntry[]}}
  */
 export function replay(events, { now = Date.now() } = {}) {
   const prompts = [];
   const entries = [];
   const byId = new Map();
   let seq = 0;
+  let turn = 0, attempts = 0, original_request = null, coverageUnknown = false;
   let lastPromptAt = -Infinity;
   for (const e of events) {
-    if (e.ev === "prompt") {
-      prompts.push({ turn: prompts.length + 1, text: String(e.text ?? ""), digest: String(e.digest ?? ""), at: e.at ?? 0, synthetic: Boolean(e.synthetic) });
+    if (e.ev === "snapshot") {
+      attempts = e.attempts ?? 0; turn = e.turn_offset ?? 0; seq = e.seq_offset ?? 0; original_request = e.original_request ?? null;
+    } else if (e.ev === "attempt") { attempts++; }
+    else if (e.ev === "gap") { coverageUnknown = true; }
+    else if (e.ev === "prompt") {
+      prompts.push({ turn: ++turn, text: String(e.text ?? ""), digest: String(e.digest ?? ""), at: e.at ?? 0, synthetic: Boolean(e.synthetic) });
+      if (!e.synthetic && original_request == null) original_request = String(e.text ?? "");
       lastPromptAt = e.at ?? lastPromptAt;
     } else if (e.ev === "pre") {
       const entry = {
-        seq: ++seq, turn: prompts.length, tool_use_id: String(e.tool_use_id ?? `seq-${seq}`), tool: String(e.tool ?? ""), kind: e.kind ?? "other",
+        seq: ++seq, turn, tool_use_id: String(e.tool_use_id ?? `seq-${seq}`), tool: String(e.tool ?? ""), kind: e.kind ?? "other",
         runner: e.runner, digest: String(e.digest ?? ""), preview: String(e.preview ?? ""), paths: Array.isArray(e.paths) ? e.paths : [], cwd: String(e.cwd ?? ""), cwd_id: String(e.cwd_id ?? ""),
         decision: e.decision ?? "SKIP", judged: Boolean(e.judged), advised: Boolean(e.advised),
         exec: e.exec === "blocked" ? "blocked" : "running", result: null,
         started_at: e.at ?? 0, ended_at: null, duration_ms: null,
       };
       entries.push(entry);
+      if (e.judged && !e.attempt_recorded && !e.cached) attempts++; // pre-reservation ledgers
       if (entry.exec === "running") byId.set(entry.tool_use_id, entry);
     } else if (e.ev === "post") {
       const entry = byId.get(String(e.tool_use_id ?? ""));
@@ -153,7 +192,7 @@ export function replay(events, { now = Date.now() } = {}) {
     if (entry.exec !== "running") continue;
     if (entry.started_at < lastPromptAt || now - entry.started_at > UNKNOWN_AFTER_MS) { entry.exec = "unknown"; entry.result = "unknown"; }
   }
-  return { turn: prompts.length, prompts, entries };
+  return { turn, seq, prompts, entries, attempts, original_request, coverageUnknown };
 }
 
 /**
@@ -167,8 +206,11 @@ export function validityOf(entries, digest, cwdId) {
   if (!last) return { validity: "none", lastPassSeq: null, changed: [], unknown: false };
   const after = entries.filter((e) => e.seq > last.seq);
   const changed = after.filter((e) => CHANGE_KINDS.has(e.kind) && e.exec !== "blocked").map((e) => e.paths[0] ?? e.preview);
-  const unknown = after.some((e) => e.exec === "unknown") || (Boolean(cwdId) && Boolean(last.cwd_id) && cwdId !== last.cwd_id);
-  const validity = changed.length ? "stale" : unknown ? "unknown" : "valid";
+  const subsequent = after.filter((e) => e.digest === digest && e.exec !== "blocked");
+  const failed = subsequent.some((e) => e.result === "fail" || e.exec === "failed");
+  const unknown = after.some((e) => e.exec === "unknown") || subsequent.some((e) => e.result !== "pass")
+    || (Boolean(cwdId) && cwdId !== last.cwd_id);
+  const validity = changed.length || failed ? "stale" : unknown ? "unknown" : "valid";
   return { validity, lastPassSeq: last.seq, changed, unknown };
 }
 
@@ -189,7 +231,7 @@ export function view(state, { digest, cwdId } = {}) {
   const real = prompts.filter((p) => !p.synthetic);   // what the user actually said; synthetic prompts only open turns
   return {
     turn,
-    original_request: real.length ? clip(real[0].text, CLIP_PROMPT) : null,
+    original_request: state.original_request != null ? clip(state.original_request, CLIP_PROMPT) : real.length ? clip(real[0].text, CLIP_PROMPT) : null,
     recent_instructions: real.slice(-3).map((p) => clip(p.text, CLIP_INSTRUCTION)),
     recent: entries.slice(-10),
     calls_this_turn: thisTurn.length,
@@ -199,8 +241,8 @@ export function view(state, { digest, cwdId } = {}) {
     last_pass_seq: v.lastPassSeq,
     changed_since_last_pass: v.changed,
     unknown_since_last_pass: v.unknown,
-    validity: v.validity,
-    jev_calls: entries.filter((e) => e.judged).length,
+    validity: state.coverageUnknown ? "unknown" : v.validity,
+    jev_calls: state.attempts ?? entries.filter((e) => e.judged).length,
     advisories_this_turn: advisedIdx.length,
     advisories_for_this_action_this_turn: same.filter((e) => e.advised).length,
     calls_since_last_advisory: advisedIdx.length ? thisTurn.length - 1 - advisedIdx[advisedIdx.length - 1] : Infinity,

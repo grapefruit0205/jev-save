@@ -71,7 +71,7 @@ export function decide(answers, view, cls, t = thresholds(), { securityMode = "o
     fired.push("scope");
     const prob = expansion >= t.expansionP ? expansion : 1 - inScope;
     advisory = { rule: "scope", text: `jev-save: this looks outside the request «${clip(view.original_request ?? "", 80)}» (scope p=${round(prob)}). Keep to the request, or ask the user before widening it.` };
-  } else if (redundant != null && redundant >= t.redundantP && view.validity === "valid" && view.last_pass_seq != null) {
+  } else if (redundant != null && redundant >= t.redundantP && view.validity === "valid" && view.last_outcome_of_this_action === "pass" && view.last_pass_seq != null) {
     fired.push("redundant");
     advisory = { rule: "redundant", text: `jev-save: #${view.last_pass_seq} ran this and passed; nothing observed changed since. Skip it unless you expect new information.` };
   } else if (necessary != null && necessary <= t.necessaryP) {

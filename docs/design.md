@@ -1,3 +1,13 @@
+# jev-save 구현 보정 (2026-09-21)
+
+아래 v0.3/v0.2 기록과 충돌하면 이 절과 README의 현재 동작 설명이 우선한다. 기존 모듈 구조는 유지한다.
+
+- 효율 kind 분류를 보안 경계로 쓰지 않는다. security `on`/`log`에서는 모든 셸·MCP 호출과 보안 대상 편집을 판단한다. `JEV_SAVE_JUDGE_KINDS`는 효율 후보만 조절한다. 명시적인 도구 제외와 세션 상한은 적용한다.
+- `FAIL_CLOSED` 오류 차단은 `advise` + security `on`의 보안 대상 호출에만 적용한다. shadow와 security `log`/`off`는 오류로 차단하지 않는다.
+- append와 compaction 모두 같은 잠금을 반드시 획득한다. 500ms 안에 획득하지 못하거나 쓰기에 실패하면 기록을 포기하고 세션에 영구적인 coverage gap 표시를 남긴다. validity는 unknown이며 새 provider 호출도 하지 않는다. 오래된 잠금을 임의로 회수하지 않는다. 프로세스 중단 후 고아 잠금이 남으면 새 세션을 사용한다.
+- provider 실행 전에 잠금 안에서 호출 횟수를 예약한다. 실패도 차감하며 cache 적중은 제외한다. provider 내부 HTTP 재시도는 같은 예약을 사용한다. compaction snapshot은 최초 요청, 누적 시도 수, 턴·호출 번호를 보존하고 남기는 이벤트의 append 순서를 유지한다.
+- 같은 행동의 후속 실패는 이전 pass를 stale로 만들고, 불명확하거나 미종료인 후속 실행은 unknown으로 만든다. redundant 권고는 validity가 valid이며 직전 완료 결과도 pass일 때만 가능하다.
+
 # jev-save 설계 v0.3 (2026-09-21) — 방향 전환
 
 v0.2 위에 1단계 base rate 결과([baserate-2026-09-21.md](baserate-2026-09-21.md))를 반영한 변경만 적는다. 아래 v0.2 본문은 그대로 두고, 충돌하는 곳은 이 절이 우선한다.

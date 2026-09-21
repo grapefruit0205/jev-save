@@ -155,8 +155,8 @@ const NEUTRAL_HEAD = new Set(["cd", "export", "set", "unset", "wait", "exit", "r
 const SUBCOMMAND_READ = {
   gh: /^(?:(?:pr|issue|repo|run|release|workflow|gist|cache|label|milestone|project|codespace|ruleset|secret|variable|ssh-key|gpg-key)\s+(?:view|list|status|diff|checks|watch|ls)\b|(?:status|auth\s+status|browse|search|version|help)\b|api\s+(?!.*(?:-X\s*(?!GET\b)|--method\s*(?!GET\b)|-f\b|-F\b|--field|--raw-field|--input)))/,
   aws: /^(?:\S+\s+)?(?:describe|list|get|ls|head|show|search|query|lookup|check|validate|wait|help|presign|scan|filter)[\w-]*\b|^sts\s+get-caller-identity|^configure\s+(?:list|get)\b|^s3api\s+(?:list|get|head)|^(?:--version|help)\b/,
-  gcloud: /\b(?:describe|list|get|read|show|search|help|version|info|config\s+list|auth\s+list)\b/,
-  az: /\b(?:show|list|get|version|help|account\s+(?:show|list))\b/,
+  gcloud: /^(?:compute\s+instances\s+(?:list|describe)|config\s+list|auth\s+list|version|info|help)(?:\s|$)/,
+  az: /^(?:(?:account|vm|group)\s+(?:show|list)|version|help)(?:\s|$)/,
   docker: /^(?:ps|images|logs|inspect|version|info|stats|top|port|diff|history|search|context\s+ls|compose\s+(?:ps|logs|config|version))\b/,
   kubectl: /^(?:get|describe|logs|top|version|api-resources|api-versions|explain|cluster-info|config\s+(?:view|current-context|get-contexts))\b/,
   helm: /^(?:list|ls|status|get|show|history|version|search|env)\b/,
@@ -258,6 +258,8 @@ function classifySegment(segment, env) {
     return { kind: "write" };   // checkout, switch, reset, rebase, merge, pull, restore, clean, apply, am, clone …
   }
   if (head === "find" && /(^|\s)-(?:delete|exec|execdir|ok|okdir|fprint\w*)\b/.test(rest)) return { kind: /-delete\b/.test(rest) && !/-exec/.test(rest) ? "write" : "other" };
+  if (head === "awk" || head === "yq") return { kind: "other" }; // embedded programs / in-place edits
+  if (head === "sort" && /(?:^|\s)(?:-[A-Za-z]*o|--output(?:\s|=|$))/.test(rest)) return { kind: "write" };
   if (SEARCH_HEAD.has(head)) return { kind: "search" };
   if (READ_HEAD.has(head)) return { kind: "read" };
   if (head === "eval" || head === "source" || head === ".") return { kind: "other" };
@@ -311,6 +313,7 @@ export function classifyAction(tool, input = {}, env = process.env) {
   if (name !== "bash" && name !== "shell") return { kind: "other" };   // Agent/Task, Workflow, unknown tools
   const command = typeof input?.command === "string" ? input.command : "";
   if (!command.trim()) return { kind: "other", command };
+  if (/\$\(|`/.test(command)) return { kind: "other", command }; // shell substitutions can execute writes
   const { text, hadHeredoc } = stripHeredocs(command);
   const kinds = splitSegments(text).map((s) => classifySegment(s, env));
   const has = (k) => kinds.some((c) => c.kind === k);
@@ -324,6 +327,15 @@ export function classifyAction(tool, input = {}, env = process.env) {
   if (has("search")) return { kind: "search", command };
   if (has("read")) return { kind: "read", command };
   return { kind: "other", command };
+}
+
+/** Security coverage is independent of efficiency heuristics. Every shell/MCP call is assessed when security
+ *  is enabled: a read-looking command, option, substitution or remote tool can have side effects. */
+export function requiresSecurity(tool, cls = {}) {
+  const name = String(tool ?? "").toLowerCase();
+  if (name === "bash" || name === "shell" || name.startsWith("mcp__")) return true;
+  if (READ_TOOLS.has(name) || SEARCH_TOOLS.has(name) || NEUTRAL_TOOLS.has(name) || EXTERNAL_TOOLS.has(name)) return false;
+  return !["read", "search", "external"].includes(cls.kind);
 }
 
 /**

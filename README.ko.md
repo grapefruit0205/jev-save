@@ -61,7 +61,11 @@ tool 결과       ──► PostToolUse hook ─────► ledger: 결과(p
 
 **정책은 코드이고 순수 함수입니다.** 보안이 먼저입니다. risk 2.5 이상은 deny, 1.5 이상은 ask이며, 사용자의 명시적 요청은 ask를 풀 수 있어도 deny는 풀지 못합니다. 그다음 권고는 우선순위에 따라 최대 하나입니다. *scope*(expansion 0.85 이상, 또는 in_scope 0.15 이하이면서 expansion 0.5 이상. 두 신호가 일치해야 하고 비교할 요청이 있어야 함), *redundant*(0.85 이상이고 ledger가 마지막 통과를 아직 valid로 볼 때만), *necessary*(0.20 이하). 잔소리를 막는 억제 규칙이 있습니다. 같은 행동에 턴당 한 번, 턴당 세 번, 연속 두 호출에는 내지 않음. 모델이 권고를 읽고도 같은 일을 하면 jev-save는 침묵합니다. 정당한 고집일 수 있으니까요.
 
-**비용은 제한됩니다.** Jev에게 묻는 것은 편집, 셸 쓰기, 스크립트, 검사, commit과 push, 부작용이 있는 MCP 도구입니다. 읽기와 검색은 같은 턴에서 반복되거나 턴의 호출이 이미 12번을 넘었을 때만 묻습니다. 세션당 200번이 지나면 더 묻지 않습니다. state 전체를 키로 하는 답변 cache가 정확한 재시도를 처리합니다. 키 없음, 시간 초과, 잘못된 답 같은 모든 실패 경로는 호출을 통과시키고 로그에 한 줄만 남깁니다.
+**보안 대상은 효율 분류와 별도로 정합니다.** security가 `on` 또는 `log`이면 모든 셸·MCP 호출이 판단 후보입니다. 이름이나 명령이 읽기처럼 보여도 동일합니다. 셸 분류는 추정 규칙이며 보안 경계가 아닙니다. 전용 읽기·검색 도구는 같은 턴에서 반복되거나 턴의 호출이 이미 12번을 넘었을 때 판단합니다. security가 `off`이면 셸·MCP에도 선택적인 효율 판단 규칙을 적용합니다. 명시적인 `JEV_SAVE_SKIP_TOOLS` 제외와 세션 상한은 계속 적용됩니다.
+
+**비용은 제한됩니다.** 기본 상한은 세션당 provider 호출 시도 200번입니다. provider 실행 전에 ledger 잠금 안에서 횟수를 예약하며 실패도 차감합니다. 동시 hook도 같은 상한을 공유합니다. cache 적중은 차감하지 않고, provider 호출 내부의 HTTP 재시도는 같은 예약에 포함됩니다. cache 키에는 state 전체와 질문 묶음이 포함됩니다. 오류는 기본적으로 호출을 통과시키고 기록합니다. `JEV_SAVE_FAIL_CLOSED`의 오류 차단은 `advise` 모드이면서 security가 `on`인 보안 대상 호출에만 적용됩니다. shadow 모드와 security `log`/`off`에서는 오류로 차단하지 않습니다.
+
+**증거는 보수적으로 유지합니다.** 같은 행동이 나중에 실패하면 이전 통과는 유효하지 않고, 결과가 불명확하거나 실행 중이면 불확실합니다. 모든 ledger 추가 기록과 compaction은 같은 잠금을 사용합니다. compaction 후에도 최초 요청, 전체 호출 시도 수, 호출·턴 번호는 보존됩니다. 잠금 시간 초과나 쓰기 실패 시 `.jsonl.uncertain` 표시를 남기고 해당 세션의 validity를 unknown으로 두며 새 provider 호출을 중단합니다. 도구 실행은 계속 허용합니다. 오래된 잠금도 임의로 빼앗지 않습니다. 프로세스 중단으로 잠금만 남았다면 새 세션을 시작하세요. 남은 세션 파일을 수동 정리할 때는 먼저 호스트를 종료해야 합니다.
 
 **shadow가 먼저지만, 길 필요는 없습니다.** 배포 기본값은 모든 판단을 `~/.jev-save/decisions.jsonl`에 기록하고 에이전트에게는 아무것도 보내지 않습니다. advise 모드도 똑같이 기록하므로 일찍 켜도 잃는 것이 적습니다. 잘못된 효율 권고는 에이전트가 무시할 수 있는 한 줄이고, 로그에는 무엇이 발동했고 에이전트가 방향을 바꿨는지가 남습니다. shadow 기간이 주는 것은 권고 없는 기준선인데, 그것은 나중에 fixture A/B로 얻을 수 있습니다. 켜기 전에 정할 것은 보안 게이트 하나입니다. 그 `ask`는 실제 승인 프롬프트가 되므로(실측에서 `sed -i` 편집이 risk 1.7), 호스트가 이미 권한 분류기를 돌린다면 `jev-save security log`로 두세요.
 
@@ -95,15 +99,15 @@ Claude Code는 hook을 바로 읽습니다. 실행 중인 세션에도 적용됩
 | `JEV_SAVE_MODE` | `shadow` (또는 `config.json`) | `advise`면 권고를 에이전트에게 보냄 |
 | `JEV_SAVE_SECURITY` | `on` (또는 `config.json`) | `log`면 보안 질문은 묻되 판정을 기록만 하고 deny/ask를 보내지 않음. 호스트가 이미 권한 분류기를 돌리는 경우용. `off`면 묻지 않음. `jev-save security on\|log\|off` |
 | `JEV_SAVE_ASK_SCORE` `JEV_SAVE_DENY_SCORE` | `1.5` `2.5` | jev-guard의 risk 임계값. bash 우선 작업이라면 `JEV_SAVE_ASK_SCORE=2`가 나을 수 있음 (실측에서 `sed -i` 편집이 1.7) |
-| `JEV_SAVE_MAX_CALLS` | `200` | 세션당 Jev 호출 수 |
+| `JEV_SAVE_MAX_CALLS` | `200` | 실패를 포함한 세션당 provider 호출 시도 수. compaction 후에도 보존 |
 | `JEV_SAVE_LONG_TURN` | `12` | 이 수를 넘는 턴에서는 읽기도 판단 |
 | `JEV_SAVE_TIMEOUT_MS` | `5000` | Jev 호출당 예산, 재시도 포함 |
 | `JEV_SAVE_NECESSARY_P` `JEV_SAVE_EXPANSION_P` `JEV_SAVE_INSCOPE_P` `JEV_SAVE_REDUNDANT_P` | `0.20` `0.85` `0.15` `0.85` | 권고 임계값. 실험용 초기값 |
 | `JEV_SAVE_MAX_ADVISORIES` `JEV_SAVE_COOLDOWN_CALLS` | `3` `2` | 턴당 권고 상한, 권고 사이의 호출 수 |
 | `JEV_SAVE_CHECK` | | 프로젝트 고유 검사 명령을 나타내는 regex |
-| `JEV_SAVE_JUDGE_KINDS` | `edit,write-bash,other,check,vcs,external-write` | 항상 판단하는 kind. 일회성 스크립트와 heredoc이 많은 세션은 `edit,check,vcs,external-write`로 좁힐 수 있음. 저자 corpus에서는 기본값이 호출의 77%를 판단해 하루 약 3.5분을 기다림 |
+| `JEV_SAVE_JUDGE_KINDS` | `edit,write-bash,other,check,vcs,external-write` | 효율 판단을 항상 수행할 kind. 보안 대상은 줄이지 않음. 셸·MCP에도 선택적인 효율 규칙을 적용하려면 security를 `off`로 설정 |
 | `JEV_SAVE_SKIP_TOOLS` | | 판단하지 않을 도구 이름 |
-| `JEV_SAVE_FAIL_CLOSED` | 없음 | Jev 장애 시 deny (보안 대상 호출, advise 모드) |
+| `JEV_SAVE_FAIL_CLOSED` | 없음 | `advise` 모드이며 security가 `on`인 보안 대상 호출에만 provider/hook 오류 시 deny. `0`, `false`, `off`, `no`는 비활성화 |
 | `JEV_MODEL` | `jev-latest` | API가 별칭만 받음 (2026-09-21에 `jev-1.13.0` 직접 지정이 거절됨). 실제로 응답한 버전을 판단마다 기록하므로 로그 비교는 그것으로 함 |
 | `JEV_SAVE_SESSIONS` `JEV_SAVE_LOG` `JEV_SAVE_CONFIG` | `~/.jev-save/…` | 상태 위치 |
 
@@ -117,7 +121,7 @@ Jev 요청뿐입니다. 도구 이름과 입력의 투영(셸 명령은 2,000자
 - **"아직 유효함"은 상한입니다.** ledger는 hook이 본 것만 압니다. 사용자나 다른 프로세스의 편집, 의존성과 환경 변화, 외부 서비스는 보이지 않습니다. 그래서 redundant 판단은 권고에 그치고, 강제는 이 버전에 없습니다.
 - **임계값은 초기값입니다.** 라벨링된 corpus가 아니라 실제 호출 몇 개로 정했습니다. shadow를 돌리고 표본을 라벨링한 뒤 정하세요.
 - **호스트마다 다릅니다.** Codex에는 `ask`가 없어 보안 ask는 "먼저 확인을 받으라"는 deny가 됩니다. Codex는 비정상 종료도 `PostToolUse`로 보내며, 셸 명령의 `tool_response` 형태는 미확인이라 runner 파서가 출력 텍스트로 통과 여부를 정합니다.
-- **지연.** 판단되는 호출마다 Jev 왕복과 Node 기동으로 약 0.7초가 듭니다. 읽기와 검색을 기본적으로 판단하지 않는 이유입니다.
+- **지연.** 초기 실측에서 판단되는 호출마다 Jev 왕복과 Node 기동으로 약 0.7초가 들었습니다. 전용 읽기·검색 도구는 선택적으로 판단하지만 security `on`/`log`에서는 상한 안의 모든 셸·MCP 호출이 대상입니다. 이전의 선택적 분류 기준 비용 측정은 현재 기본값에 그대로 적용할 수 없습니다.
 
 ## 측정
 

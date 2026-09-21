@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { append, cwdIdOf, describe, readEvents, replay, sessionPath, validityOf, view } from "../src/core/ledger.js";
+import { append, cwdIdOf, describe, readEvents, replay, reserveCall, sessionPath, validityOf, view } from "../src/core/ledger.js";
 
 const fresh = () => mkdtempSync(join(tmpdir(), "jev-save-ledger-"));
 const sid = "session-1";
@@ -173,7 +173,8 @@ test("compaction keeps the tail and the prompts, and the file stays readable", (
   const path = sessionPath(sid, dir);
   assert.ok(statSync(path).size < 2 * 1024 * 1024, "compaction ran and the file is back under the trigger");
   const events = readEvents(sid, dir);
-  assert.equal(events[0].ev, "prompt");
+  assert.equal(events[0].ev, "snapshot");
+  assert.equal(replay(events).original_request, "first");
   assert.equal(events.at(-1).tool_use_id, "t399");
   assert.ok(events.length <= 421 && events.length > 100);
 });
@@ -184,27 +185,77 @@ const run = (script) => new Promise((resolve, reject) => {
   child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}`))));
 });
 
-test("append waits for a compaction lock held by another process, and takes over a stale one", async () => {
+test("append waits for an explicitly acquired lock, independent of child startup time", async () => {
   const dir = fresh();
   const lock = sessionPath(sid, dir) + ".lock";
   mkdirSync(dir, { recursive: true });
-  // another process holds the lock for 200 ms
-  const holder = run(`import { mkdirSync, rmdirSync } from "node:fs"; mkdirSync(${JSON.stringify(lock)}); setTimeout(() => rmdirSync(${JSON.stringify(lock)}), 200);`);
-  await new Promise((r) => setTimeout(r, 60));
-  const t0 = Date.now();
-  assert.equal(append(sid, { ev: "prompt", turn: 1, text: "x", digest: "p1" }, { dir }), true);
-  assert.ok(Date.now() - t0 >= 100, "waited for the lock instead of writing under it");
-  await holder;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { mkdirSync, rmdirSync, existsSync } from "node:fs";
+    import assert from "node:assert/strict";
+    mkdirSync(${JSON.stringify(lock)});
+    process.stdout.write("locked\\n");
+    process.stdin.once("data", () => setTimeout(() => {
+      assert.equal(existsSync(${JSON.stringify(sessionPath(sid, dir))}), false, "no append under the lock");
+      rmdirSync(${JSON.stringify(lock)}); process.stdin.destroy();
+    }, 100));
+  `], { stdio: ["pipe", "pipe", "inherit"] });
+  const done = new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`holder exited ${code}`))); });
+  await new Promise((resolve, reject) => { child.stdout.once("data", resolve); child.on("error", reject); child.on("exit", () => reject(new Error("holder exited before ready"))); });
+  child.stdin.write("release soon\n");
+  const appended = append(sid, { ev: "prompt", turn: 1, text: "x", digest: "p1" }, { dir });
+  await done;
+  assert.equal(appended, true);
   assert.equal(readEvents(sid, dir).length, 1);
-  // a lock left behind by a dead process is stale and taken over at once
+});
+
+test("lock timeout never writes under another owner and marks evidence unknown, even for an old lock", () => {
+  const dir = fresh(), lock = sessionPath(sid, dir) + ".lock";
+  scenario(dir, [{ prompt: "fix", turn: 1 }, { pre: "c1", id: "t1" }, { post: "t1" }]);
+  const before = readFileSync(sessionPath(sid, dir), "utf8");
   mkdirSync(lock);
   const old = new Date(Date.now() - 60_000);
   utimesSync(lock, old, old);
-  const t1 = Date.now();
-  assert.equal(append(sid, { ev: "prompt", turn: 2, text: "y", digest: "p2" }, { dir }), true);
-  assert.ok(Date.now() - t1 < 100);
-  assert.equal(existsSync(lock), false, "released after use");
-  assert.equal(readEvents(sid, dir).length, 2);
+  assert.equal(append(sid, { ev: "pre", tool_use_id: "lost-edit", kind: "edit" }, { dir }), false);
+  assert.equal(readFileSync(sessionPath(sid, dir), "utf8"), before);
+  assert.equal(existsSync(lock), true, "never steal a possibly live writer's lock");
+  rmdirSync(lock);
+  const state = replay(readEvents(sid, dir));
+  assert.equal(view(state, { digest: "c1", cwdId: cwdIdOf("/repo") }).validity, "unknown");
+  assert.equal(reserveCall(sid, { dir }).why, "ledger", "do not spend calls on incomplete evidence");
+});
+
+test("later failed, unknown and in-flight runs supersede earlier passing evidence", () => {
+  for (const [result, exec, expected] of [["fail", "failed", "stale"], ["unknown", "completed", "unknown"], [null, "running", "unknown"]]) {
+    const entries = [
+      { seq: 1, digest: "a", kind: "check", exec: "completed", result: "pass", cwd_id: "r" },
+      { seq: 2, digest: "a", kind: "check", exec, result, cwd_id: "r" },
+    ];
+    assert.equal(validityOf(entries, "a", "r").validity, expected);
+    entries.push({ seq: 3, digest: "a", kind: "check", exec: "completed", result: "pass", cwd_id: "r" });
+    assert.equal(validityOf(entries, "a", "r").validity, "valid", "a new observed pass establishes a new baseline");
+  }
+});
+
+test("compaction preserves the original request, turn/sequence numbers and provider attempts", () => {
+  const dir = fresh();
+  for (let i = 0; i < 25; i++) append(sid, { ev: "prompt", text: `request-${i}` }, { dir, now: i });
+  for (let i = 0; i < 7; i++) assert.equal(reserveCall(sid, { dir, limit: 7 }).ok, true);
+  for (let i = 0; i < 800; i++) append(sid, { ev: "pre", tool_use_id: `u${i}`, kind: "read", preview: "x".repeat(6000), attempt_recorded: true }, { dir, now: 1000 - i });
+  const state = replay(readEvents(sid, dir));
+  assert.equal(state.original_request, "request-0");
+  assert.equal(state.turn, 25);
+  assert.equal(state.seq, 800);
+  assert.equal(state.attempts, 7);
+  assert.equal(reserveCall(sid, { dir, limit: 7 }).why, "budget");
+  assert.equal(state.entries.at(-1).tool_use_id, "u799", "append order survives nonmonotonic timestamps");
+});
+
+test("provider reservations enforce one shared limit across processes", async () => {
+  const dir = fresh();
+  const script = `import { reserveCall } from ${JSON.stringify(LEDGER_URL)};
+    for (let i = 0; i < 10; i++) reserveCall(${JSON.stringify(sid)}, { dir: ${JSON.stringify(dir)}, limit: 7 });`;
+  await Promise.all(Array.from({ length: 4 }, () => run(script)));
+  assert.equal(replay(readEvents(sid, dir)).attempts, 7);
 });
 
 test("concurrent writers through compaction lose nothing: every writer's surviving events are a contiguous suffix (review P2)", async () => {

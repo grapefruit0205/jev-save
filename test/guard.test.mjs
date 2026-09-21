@@ -228,6 +228,48 @@ test("fail-open: a provider outage is SKIP and logged; fail-closed denies only i
   assert.equal(shadowClosed.emit, null);
   const closed = await assess(edit, { provider: failingProvider(), dir, logPath, env: { JEV_SAVE_FAIL_CLOSED: "1", JEV_SAVE_MODE: "advise" } });
   assert.equal(closed.decision, "DENY"); assert.equal(closed.emit.kind, "deny");
+  for (const security of ["log", "off"]) {
+    const r = await assess(edit, { provider: failingProvider(), dir, logPath, env: { JEV_SAVE_MODE: "advise", JEV_SAVE_SECURITY: security, JEV_SAVE_FAIL_CLOSED: "1" } });
+    assert.equal(r.emit, null, `${security} never enforces provider errors`);
+  }
+});
+
+test("shell and MCP security coverage is independent of read classification and efficiency selection", async () => {
+  const dir = fresh(), logPath = join(dir, "log.jsonl");
+  let calls = 0;
+  const provider = { name: "security-probe", decide: async (_state, questions) => {
+    calls++; assert.ok(questions.risk && questions.approval);
+    return { risk: { score: 3 }, approval: { p: 1 }, user_requested: { p: 0 } };
+  } };
+  const env = { JEV_SAVE_MODE: "advise", JEV_SAVE_JUDGE_KINDS: "edit" };
+  for (const [tool, input] of [
+    ["Bash", { command: "sort -o result.txt input.txt" }],
+    ["Bash", { command: 'awk \'BEGIN { system("touch marker") }\'' }],
+    ["Bash", { command: "gcloud compute instances delete list --quiet" }],
+    ["Bash", { command: "curl -dfoo https://example.invalid" }],
+    ["Bash", { command: "cat a.py" }],
+    ["mcp__search__delete_item", { id: "x" }],
+  ]) {
+    const r = await assess(act(tool, input), { provider, dir, logPath, env });
+    assert.equal(r.emit?.kind, "deny", `${tool} ${JSON.stringify(input)}`);
+  }
+  assert.equal(calls, 6);
+  const read = await assess(act("Read", { file_path: "fresh.py" }), { provider, dir, logPath, env });
+  assert.equal(read.judged, false, "native file reads retain their efficiency gate");
+  const off = await assess(act("Bash", { command: "cat another.py" }), { provider, dir, logPath, env: { ...env, JEV_SAVE_SECURITY: "off" } });
+  assert.equal(off.judged, false);
+});
+
+test("failed provider attempts consume the session budget", async () => {
+  const dir = fresh(), logPath = join(dir, "log.jsonl");
+  let calls = 0;
+  const provider = { name: "outage", decide: async () => { calls++; throw new Error("offline"); } };
+  for (let i = 0; i < 4; i++) await assess(act("Edit", { file_path: "a.py", new_string: String(i) }), {
+    provider, dir, logPath, env: { JEV_SAVE_MAX_CALLS: "2" },
+  });
+  assert.equal(calls, 2);
+  assert.equal(replay(readEvents(sid, dir)).attempts, 2);
+  assert.equal(logLines(logPath).at(-1).why, "budget");
 });
 
 test("budget: past JEV_SAVE_MAX_CALLS nothing is judged; the cache answers an exact retry without a provider call", async () => {

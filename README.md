@@ -61,7 +61,11 @@ tool result ──► PostToolUse hook ─────► ledger: outcome (pass 
 
 **Policy is code, and pure.** Security first: risk 2.5+ denies, risk 1.5+ asks, and the user's own explicit request lifts an ask (never a deny). Then at most one advisory, by priority: *scope* (expansion ≥ 0.85, or in_scope ≤ 0.15 with expansion ≥ 0.5 — the two signals must agree, and there must be a request to measure against), *redundant* (≥ 0.85, and only when the ledger says the last pass is still valid), *necessary* (≤ 0.20). Suppression keeps it from nagging: one advisory per action per turn, three per turn, never two calls in a row. If the model reads an advisory and does the same thing anyway, jev-save stays silent — that may be a legitimate insistence.
 
-**Cost is bounded.** Jev is asked about edits, shell writes, scripts, checks, commits/pushes and MCP tools with side effects; about reads and searches only when they repeat within a turn or the turn has already made 12 calls. A session stops asking after 200 calls. An answer cache keyed on the whole state handles exact retries. Every failure path — no key, a timeout, a malformed answer — lets the call through and writes one line to the log.
+**Security coverage is separate from efficiency classification.** With security `on` or `log`, every shell and MCP call is a judgment candidate, even if its name or command looks read-only. Shell classification is a heuristic, not a security boundary. Native read/search tools are judged when they repeat within a turn or the turn has already made 12 calls. With security `off`, shell and MCP calls also follow the selective efficiency rules. Explicit `JEV_SAVE_SKIP_TOOLS` exclusions and the session budget still apply.
+
+**Cost is bounded.** A session stops asking after 200 provider invocation attempts by default. Each attempt is reserved under the ledger lock before the provider runs, including attempts that fail; concurrent hooks share the limit. Cache hits do not consume attempts, and HTTP retries inside one provider invocation share its reservation. The cache key includes the whole state and question bundle. Errors normally let the call through and are logged. `JEV_SAVE_FAIL_CLOSED` can deny security-bearing calls only with mode `advise` and security `on`; shadow mode and security `log`/`off` never deny on an error.
+
+**Evidence stays conservative.** A later failure of the same action invalidates an earlier pass; a later unknown or unfinished run makes it uncertain. Every ledger append and compaction uses the same lock. Compaction preserves the original request, total attempt count and sequence/turn numbering independently of the retained history. After a lock timeout or write failure, a `.jsonl.uncertain` marker makes validity unknown and disables new provider attempts for that session. Tools continue to run. Locks are never stolen based on age: after a crashed writer leaves an orphaned lock, start a new session; stop the host before manually cleaning up abandoned session files.
 
 **Shadow first, but not for long.** The shipped default records every judgment in `~/.jev-save/decisions.jsonl` and sends nothing to the agent. Advise mode logs exactly the same, so switching early costs little: a wrong efficiency advisory is one line the agent can ignore, and the log still says what fired and whether the agent changed course. What a shadow period buys is a clean baseline without advisories, which the fixture A/B can supply later. The one thing to decide before switching is the security gate: its `ask` becomes a real permission prompt (a `sed -i` edit scored risk 1.7 live), so a host that already runs its own permission classifier should set `jev-save security log`.
 
@@ -95,15 +99,15 @@ Claude Code picks the hooks up at once, even in a running session. Codex needs t
 | `JEV_SAVE_MODE` | `shadow` (or `config.json`) | `advise` sends advisories to the agent |
 | `JEV_SAVE_SECURITY` | `on` (or `config.json`) | `log` asks the security questions and records the verdict but never sends deny/ask — for hosts that already run a permission classifier; `off` does not ask them. `jev-save security on\|log\|off` |
 | `JEV_SAVE_ASK_SCORE` `JEV_SAVE_DENY_SCORE` | `1.5` `2.5` | jev-guard's risk thresholds; bash-first workflows may want `JEV_SAVE_ASK_SCORE=2` (a `sed -i` edit scored 1.7 live) |
-| `JEV_SAVE_MAX_CALLS` | `200` | Jev calls per session |
+| `JEV_SAVE_MAX_CALLS` | `200` | provider invocation attempts per session, including failures; preserved through compaction |
 | `JEV_SAVE_LONG_TURN` | `12` | calls in a turn after which reads are judged too |
 | `JEV_SAVE_TIMEOUT_MS` | `5000` | budget per Jev call, retries included |
 | `JEV_SAVE_NECESSARY_P` `JEV_SAVE_EXPANSION_P` `JEV_SAVE_INSCOPE_P` `JEV_SAVE_REDUNDANT_P` | `0.20` `0.85` `0.15` `0.85` | advisory thresholds — experimental initial values |
 | `JEV_SAVE_MAX_ADVISORIES` `JEV_SAVE_COOLDOWN_CALLS` | `3` `2` | per-turn budget, calls between advisories |
 | `JEV_SAVE_CHECK` | | regex naming your own check command |
-| `JEV_SAVE_JUDGE_KINDS` | `edit,write-bash,other,check,vcs,external-write` | kinds always judged; bash-heavy sessions (one-off scripts, heredocs) can narrow it to `edit,check,vcs,external-write` — on the author's corpus the default judges 77% of calls, about 3.5 min of waiting a day |
+| `JEV_SAVE_JUDGE_KINDS` | `edit,write-bash,other,check,vcs,external-write` | efficiency kinds always judged; does not narrow security coverage. To apply selective efficiency rules to shell/MCP calls, set security `off` |
 | `JEV_SAVE_SKIP_TOOLS` | | tool names never judged |
-| `JEV_SAVE_FAIL_CLOSED` | unset | deny (security-bearing calls, advise mode) when Jev is unreachable |
+| `JEV_SAVE_FAIL_CLOSED` | unset | deny security-bearing calls on provider/hook errors only with mode `advise` and security `on`; `0`, `false`, `off`, `no` disable it |
 | `JEV_MODEL` | `jev-latest` | the API accepts only its aliases (`jev-1.13.0` by name was rejected on 2026-09-21); the version actually served is recorded per decision, which is what keeps logs comparable |
 | `JEV_SAVE_SESSIONS` `JEV_SAVE_LOG` `JEV_SAVE_CONFIG` | `~/.jev-save/…` | state locations |
 
@@ -117,7 +121,7 @@ Only the Jev request: the tool name and a projection of its input (a shell comma
 - **"Still valid" is an upper bound.** The ledger sees what the hooks see: edits made by you or by another process, dependency or environment changes and external services are invisible, which is why the redundancy judgment is advisory only and why enforcement is not in this version.
 - **The thresholds are initial values.** They were chosen from a handful of live calls, not from a labeled corpus. Run shadow mode, label a sample, then decide.
 - **Hosts differ.** Codex has no `ask`: a security ask becomes a deny that tells the model to get confirmation first. Codex reports a non-zero exit through `PostToolUse` and its exact `tool_response` shape for shell commands is unconfirmed; the runner parsers decide pass/fail from the output text.
-- **Latency.** A judged call costs the Jev round trip plus a Node start, roughly 0.7 s. Reads and searches are not judged by default for that reason.
+- **Latency.** A judged call costs the Jev round trip plus a Node start, roughly 0.7 s in the initial measurements. Native reads/searches remain selective, but security `on`/`log` now covers all shell/MCP calls within the budget; earlier selective-classifier cost measurements no longer describe that default.
 
 ## Measuring
 

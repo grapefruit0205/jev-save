@@ -18,7 +18,7 @@
  * `pre` is written by PreToolUse, `post` by PostToolUse / PostToolUseFailure, `prompt` by UserPromptSubmit.
  * @typedef {object} LedgerEvent
  * @property {1} v
- * @property {'prompt'|'pre'|'post'} ev
+ * @property {'prompt'|'pre'|'post'|'attempt'|'snapshot'|'gap'} ev
  * @property {number} at              Date.now()
  * @property {number} [turn]          prompt: the new turn number; pre: the turn it belongs to
  * @property {string} [text]          prompt: redacted, clipped
@@ -33,6 +33,11 @@
  * @property {Decision} [decision]    pre: what policy said (SKIP when Jev was not asked)
  * @property {Mode} [mode]
  * @property {boolean} [judged]       pre: true when a Jev call was made for it
+ * @property {boolean} [attempt_recorded] pre: provider accounting lives in separate attempt events
+ * @property {number} [attempts]      snapshot: total reserved provider attempts
+ * @property {string|null} [original_request] snapshot: first real prompt
+ * @property {number} [turn_offset]   snapshot: turns omitted from the retained history
+ * @property {number} [seq_offset]    snapshot: pre events omitted from the retained history
  * @property {boolean} [advised]      pre: true when an advisory was emitted to the agent
  * @property {ExecState} [exec]       pre: running | blocked;  post: completed | failed
  * @property {Result} [result]        post
@@ -83,7 +88,7 @@
  * @property {string[]} changed_since_last_pass      previews of change-kind entries after last_pass_seq
  * @property {boolean} unknown_since_last_pass
  * @property {'valid'|'stale'|'unknown'|'none'} validity
- * @property {number} jev_calls                      how many entries in this session were judged
+ * @property {number} jev_calls                      provider invocation attempts, including failures
  * @property {number} advisories_this_turn
  * @property {number} advisories_for_this_action_this_turn
  * @property {number} calls_since_last_advisory       Infinity when none this turn

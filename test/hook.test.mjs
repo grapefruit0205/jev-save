@@ -61,14 +61,15 @@ test("handle: a whole turn through the hook, shadow then advise", async () => {
   assert.equal(await handle(post("Bash", { command: "pytest -q" }, "u3", { stdout: "===== 3 passed in 0.1s =====", stderr: "", interrupted: false }), o()), null);
   // the same check again: shadow logs the redundant advisory silently, advise emits it
   assert.equal(await handle(pre("Bash", { command: "pytest -q" }, "u4"), o()), null);
+  await handle(post("Bash", { command: "pytest -q" }, "u4", { stdout: "===== 3 passed in 0.1s =====" }), o());
   const out = await handle(pre("Bash", { command: "pytest -q" }, "u5"), o({ JEV_SAVE_MODE: "advise" }));
-  assert.match(out.hookSpecificOutput.additionalContext, /#3 ran this and passed/);
+  assert.match(out.hookSpecificOutput.additionalContext, /#4 ran this and passed/);
   // unknown events and missing session ids are ignored
   assert.equal(await handle({ hook_event_name: "Stop", session_id: sid }, o()), null);
   assert.equal(await handle(pre("Edit", {}, "u9", { session_id: "" }), o()), null);
   const entries = replay(readEvents(sid, dir)).entries;
   assert.deepEqual(entries.map((e) => [e.tool, e.decision, e.exec, e.result]), [
-    ["Read", "SKIP", "completed", "pass"], ["Edit", "ALLOW", "completed", "pass"], ["Bash", "ALLOW", "completed", "pass"], ["Bash", "ALLOW", "running", null], ["Bash", "ALLOW", "running", null],
+    ["Read", "SKIP", "completed", "pass"], ["Edit", "ALLOW", "completed", "pass"], ["Bash", "ALLOW", "completed", "pass"], ["Bash", "ALLOW", "completed", "pass"], ["Bash", "ALLOW", "running", null],
   ]);
   // the config file's mode applies when the environment says nothing
   const viaConfig = await handle(pre("Bash", { command: "pytest -q" }, "u6"), { ...o(), config: { mode: "advise" } });
@@ -90,4 +91,11 @@ test("main: JSON in, JSON out; garbage in, nothing out; a provider failure is si
   assert.equal(await run(pre("Edit", { file_path: "a", old_string: "a", new_string: "b" }, "m1")), "");
   const denied = JSON.parse(await run(pre("Bash", { command: "rm -rf /" }, "m2"), { JEV_SAVE_MODE: "advise" }));
   assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
+  // Force an exception outside provider.decide: invalid path conversion in the action projection.
+  const malformed = pre("Edit", { file_path: { toString: null } }, "bad");
+  for (const [mode, security] of [["shadow", "on"], ["advise", "log"], ["advise", "off"]]) {
+    assert.equal(await run(malformed, { JEV_SAVE_MODE: mode, JEV_SAVE_SECURITY: security, JEV_SAVE_FAIL_CLOSED: "1" }), "");
+  }
+  const failedClosed = JSON.parse(await run(malformed, { JEV_SAVE_MODE: "advise", JEV_SAVE_SECURITY: "on", JEV_SAVE_FAIL_CLOSED: "1" }));
+  assert.equal(failedClosed.hookSpecificOutput.permissionDecision, "deny");
 });
