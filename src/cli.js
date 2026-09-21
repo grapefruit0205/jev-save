@@ -19,7 +19,9 @@ const USAGE = `jev-save — runtime efficiency guard for coding agents, powered 
   jev-save doctor                        Node, key, one Jev round trip, hook registration, state directories
   jev-save key <api key>                 Save the key to ~/.jev-save/config.json (0600); vck_… keys are
                                           treated as Vercel AI Gateway keys, anything else as TypeSafe
-  jev-save stats [--days N]              Summarize the decision log (see tools/ for measurement)
+  jev-save stats [--days N]              Summarize the decision log: decisions, advisories, latency, label scorecard
+  jev-save review [--days N] [--limit N] [--unlabeled]   The advisories that fired, what the agent did next, and their labels
+  jev-save label <key|#n> right|wrong|unsure ["note"]     Record whether an advisory was right (#n from the last review)
 
 Inherited from jev-guard, for other hosts (not covered by jev-save's efficiency judgments):
   jev-save hook --legacy [--agent …]     jev-guard's hook (Copilot, Gemini, Cursor payloads)
@@ -114,6 +116,29 @@ switch (cmd) {
   case "stats": {
     const { stats } = await import("./stats.js");
     console.log(stats({ days: rest.includes("--days") ? Number(rest[rest.indexOf("--days") + 1]) : undefined }));
+    break;
+  }
+  case "review": {
+    const { advisories, render } = await import("./review.js");
+    const opt = (k) => (rest.includes(k) ? Number(rest[rest.indexOf(k) + 1]) : undefined);
+    const items = advisories({ days: opt("--days"), unlabeledOnly: rest.includes("--unlabeled") });
+    console.log(render(items, { limit: opt("--limit") ?? 20 }));
+    if (items.length) console.log(`\nlabel one with: jev-save label #<n> right|wrong|unsure "why"`);
+    break;
+  }
+  case "label": {
+    const { advisories, label } = await import("./review.js");
+    const [ref, value, ...noteParts] = rest;
+    if (!ref || !value) die("label needs a key (or #n from the last review) and one of right, wrong, unsure");
+    let key = ref;
+    if (/^#\d+$/.test(ref)) {
+      const items = advisories({});
+      const item = items[Number(ref.slice(1)) - 1];
+      if (!item) die(`no advisory #${ref.slice(1)} in the current review`);
+      key = item.key;
+    }
+    try { label(key, value, { note: noteParts.join(" ") }); } catch (e) { die(e.message); }
+    console.log(`jev-save: labeled ${key} as ${value}`);
     break;
   }
   case "acp": {

@@ -77,7 +77,9 @@
  * What the guard (and, projected, Jev) gets to know about the session at the moment of one action.
  * @typedef {object} View
  * @property {number} turn
- * @property {string|null} original_request     first real prompt of the session, clipped
+ * @property {string|null} original_request     first real prompt of the session, clipped (background)
+ * @property {string|null} current_request      the user's most recent real prompt: what a call is judged against
+ * @property {number|null} turns_since_current_request
  * @property {string[]} recent_instructions     last 3 prompts, clipped
  * @property {LedgerEntry[]} recent             last 10 entries, oldest first
  * @property {number} calls_this_turn

@@ -70,7 +70,8 @@ test("buildState keeps jev-guard's key names and adds the efficiency context", (
   const v = view(state, { digest: "d", cwdId: cwdIdOf("/repo") });
   const st = buildState(act("Bash", { command: "pytest -q" }), { kind: "check", runner: "test" }, v, { home: "/home/u" });
   assert.deepEqual(st.context.user_recent_messages, ["로그인 버그만 고쳐. DB는 건드리지 마."]);
-  assert.equal(st.context.original_request, "로그인 버그만 고쳐. DB는 건드리지 마.");
+  assert.equal(st.context.current_request, "로그인 버그만 고쳐. DB는 건드리지 마.");
+  assert.equal(st.context.original_request, undefined, "same as current: not repeated as background");
   assert.equal(st.context.proposed_action_kind, "check (test)");
   assert.equal(st.context.validity, "none");
   assert.deepEqual(st.context.this_turn, { calls: 0, reads: 0, searches: 0, checks: 0, edits: 0 });

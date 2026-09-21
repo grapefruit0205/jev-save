@@ -1,6 +1,8 @@
 // `jev-save stats`: what the decision log says. Counts only; the measurement tools in tools/ do the rest.
 import { readFileSync } from "node:fs";
 import { DEFAULT_LOG } from "./core/log.js";
+import { scorecard } from "./review.js";
+import { lockReport } from "./core/ledger.js";
 
 export function stats({ path = DEFAULT_LOG(), days, now = Date.now() } = {}) {
   let lines;
@@ -31,5 +33,16 @@ export function stats({ path = DEFAULT_LOG(), days, now = Date.now() } = {}) {
     `  modes              shadow ${count((r) => r.mode === "shadow")}, advise ${count((r) => r.mode === "advise")}`,
     `  model served       ${Object.entries(models).map(([m, n]) => `${m} ${n}`).join("  ") || "–"}`,
   ];
+  const card = scorecard({ logPath: path, days, now });
+  if (Object.keys(card).length) {
+    out.push("  advisory scorecard (labels from `jev-save review` / `jev-save label`):");
+    for (const [rule, r] of Object.entries(card)) {
+      const prec = r.labeled ? `${r.right}/${r.labeled} right (${Math.round(100 * r.right / r.labeled)}%)` : "unlabeled";
+      const course = r.emitted_with_next ? `${r.changed_course}/${r.emitted_with_next} changed course after a sent advisory` : "no sent advisory followed by another call";
+      out.push(`    ${rule.padEnd(10)} fired ${r.fired}, sent ${r.emitted}, suppressed ${r.suppressed} · ${prec} · ${course}`);
+    }
+  }
+  const locks = lockReport();
+  if (locks.orphans.length || locks.uncertain.length) out.push(`  ledger health      ${locks.orphans.length} orphaned lock(s) (reclaimed on next use), ${locks.uncertain.length} session(s) marked uncertain after a write failure`);
   return out.join("\n");
 }

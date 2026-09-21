@@ -66,11 +66,12 @@ export function decide(answers, view, cls, t = thresholds(), { securityMode = "o
   // scope needs a request to be measured against, and the two signals must agree: a low in_scope with a low
   // scope_expansion means "not needed", which is necessary's case, not scope's (first live false positive:
   // in_scope 0.15 / expansion 0.18 against a pasted terminal output that had been taken for the request)
-  const scopeHit = view.original_request && expansion != null && (expansion >= t.expansionP || (inScope != null && inScope <= t.inScopeP && expansion >= 0.5));
+  const request = view.current_request ?? view.original_request;
+  const scopeHit = request && expansion != null && (expansion >= t.expansionP || (inScope != null && inScope <= t.inScopeP && expansion >= 0.5));
   if (scopeHit) {
     fired.push("scope");
     const prob = expansion >= t.expansionP ? expansion : 1 - inScope;
-    advisory = { rule: "scope", text: `jev-save: this looks outside the request «${clip(view.original_request ?? "", 80)}» (scope p=${round(prob)}). Keep to the request, or ask the user before widening it.` };
+    advisory = { rule: "scope", text: `jev-save: this looks outside the request «${clip(request, 80)}» (scope p=${round(prob)}). Keep to the request, or ask the user before widening it.` };
   } else if (redundant != null && redundant >= t.redundantP && view.validity === "valid" && view.last_outcome_of_this_action === "pass" && view.last_pass_seq != null) {
     fired.push("redundant");
     advisory = { rule: "redundant", text: `jev-save: #${view.last_pass_seq} ran this and passed; nothing observed changed since. Skip it unless you expect new information.` };

@@ -67,6 +67,8 @@ tool 결과       ──► PostToolUse hook ─────► ledger: 결과(p
 
 **증거는 보수적으로 유지합니다.** 같은 행동이 나중에 실패하면 이전 통과는 유효하지 않고, 결과가 불명확하거나 실행 중이면 불확실합니다. 모든 ledger 추가 기록과 compaction은 같은 잠금을 사용합니다. compaction 후에도 최초 요청, 전체 호출 시도 수, 호출·턴 번호는 보존됩니다. 잠금 시간 초과나 쓰기 실패 시 `.jsonl.uncertain` 표시를 남기고 해당 세션의 validity를 unknown으로 두며 새 provider 호출을 중단합니다. 도구 실행은 계속 허용합니다. 오래된 잠금도 임의로 빼앗지 않습니다. 프로세스 중단으로 잠금만 남았다면 새 세션을 시작하세요. 남은 세션 파일을 수동 정리할 때는 먼저 호스트를 종료해야 합니다.
 
+**검증은 기다림이 아니라 루프입니다.** `jev-save review`가 권고마다 신호와 에이전트의 다음 호출을 보여주고, `jev-save label`로 맞았는지 기록하면 `stats`가 규칙별 정밀도로 만듭니다. 첫 실사용 라운드가 설계를 한 번 바꿨습니다. 세션 첫 프롬프트를 30턴 뒤 호출의 기준으로 삼은 권고가 틀렸고, 이제 범위는 사용자의 가장 최근 지시에 대해 판단합니다.
+
 **shadow가 먼저지만, 길 필요는 없습니다.** 배포 기본값은 모든 판단을 `~/.jev-save/decisions.jsonl`에 기록하고 에이전트에게는 아무것도 보내지 않습니다. advise 모드도 똑같이 기록하므로 일찍 켜도 잃는 것이 적습니다. 잘못된 효율 권고는 에이전트가 무시할 수 있는 한 줄이고, 로그에는 무엇이 발동했고 에이전트가 방향을 바꿨는지가 남습니다. shadow 기간이 주는 것은 권고 없는 기준선인데, 그것은 나중에 fixture A/B로 얻을 수 있습니다. 켜기 전에 정할 것은 보안 게이트 하나입니다. 그 `ask`는 실제 승인 프롬프트가 되므로(실측에서 `sed -i` 편집이 risk 1.7), 호스트가 이미 권한 분류기를 돌린다면 `jev-save security log`로 두세요.
 
 ## 설치
@@ -87,7 +89,8 @@ jev-save doctor                  # node, 키, Jev 왕복 1회, hook 등록, 상�
 jev-save mode advise                          # 권고를 켬 (기본: shadow, 로그만). 판단은 어느 모드에서나 전부 기록됨
 jev-save security log                         # jev-guard의 deny/ask는 기록만 (Claude Code의 권한 계층이 그대로 담당)
 jev-save check --task "로그인 고쳐" Bash '{"command":"pytest -q"}'   # 호출 하나를 판단하고 신호를 출력
-jev-save stats --days 7                       # 결정 로그 요약
+jev-save stats --days 7                       # 결정 로그 요약. 라벨이 있으면 규칙별 scorecard 포함
+jev-save review --unlabeled                   # 권고마다 신호와 그 뒤 에이전트의 행동을 보여줌. 이어서 label #n right|wrong|unsure "이유"
 jev-save uninstall claude                     # install이 기록한 항목만 제거. 백업은 남음
 JEV_SAVE_PROVIDER=mock jev-save check …       # 오프라인 mock provider, 키 불필요
 ```
