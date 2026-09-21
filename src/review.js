@@ -78,7 +78,7 @@ export function render(items, { limit = 20, index = true } = {}) {
   items.slice(0, limit).forEach((a, i) => {
     const when = new Date(a.at).toISOString().slice(5, 16).replace("T", " ");
     const tag = a.label ? `[${a.label}]` : a.emitted ? "[sent]" : a.suppressed ? `[suppressed: ${a.why}]` : "[shadow]";
-    const sig = Object.entries(a.signals).filter(([k]) => ["forbidden", "needed", "permitted", "kind", "in_scope", "necessary", "redundant", "scope_expansion"].includes(k)).map(([k, v]) => `${k}=${v}`).join(" ");
+    const sig = Object.entries(a.signals).filter(([k]) => ["in_scope", "necessary", "redundant", "scope_expansion"].includes(k)).map(([k, v]) => `${k}=${v}`).join(" ");
     lines.push(`${index ? `#${i + 1} ` : ""}${when}  ${a.rule.padEnd(9)} ${tag}`);
     lines.push(`   call   ${a.tool} ${clip(a.preview, 90)}`);
     lines.push(`   signal ${sig}${a.view?.validity ? `  validity=${a.view.validity}` : ""}`);

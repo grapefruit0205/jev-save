@@ -1,13 +1,9 @@
-// What Jev gets to see for one tool call: the session as a conversation — the user's words verbatim and the
-// agent's actions one line each, in order — plus a projection of the proposed call (never a whole input: a
-// Write carries a file, an apply_patch carries a patch). No summary, no classifier output: interpretation is
-// the model's job. The ledger's facts (what passed, what changed since) are appended as short fields for the
-// questions that name them, and decided in code.
-//
-// Top-level keys mirror jev-guard (agent, tool, input, cwd, context) and `context.user_recent_messages`
-// keeps its name because jev-guard's security questions read it.
+// What Jev gets to see for one tool call: a projection of the tool input (never the whole input — a Write
+// carries a file, an apply_patch carries a patch) and the parts of the ledger view the questions refer to
+// by name. Key names under `context` are shared with jev-guard's security questions
+// (user_recent_messages, recent_tool_calls), so they must not be renamed.
 import { redact } from "./evidence.js";
-import { clip, history } from "./ledger.js";
+import { clip, describe } from "./ledger.js";
 import "./types.js";
 
 const HEAD = 300;
@@ -51,43 +47,31 @@ export function projectInput(tool, input = {}, home) {
 
 const len = (s) => (typeof s === "string" ? s.length : 0);
 
-/** One line naming the proposed call, the way agent actions appear in the history. */
-export function describeCall(tool, projected) {
-  const name = String(tool ?? "").toLowerCase();
-  if (name === "bash" || name === "shell") return `Bash ${projected.command ?? ""}`;
-  if (name === "apply_patch") return `apply_patch ${(projected.files ?? []).join(", ")}`;
-  const path = projected.file_path ?? projected.notebook_path ?? projected.path ?? "";
-  const head = projected.new_string_head ?? projected.content_head ?? projected.first_new_string_head ?? projected.new_source_head ?? projected.pattern ?? "";
-  return `${tool} ${path}${head ? `: ${clip(head, 160)}` : ""}`.trim();
-}
-
 /**
- * The state object sent to Jev.
+ * The state object sent to Jev. Top level mirrors jev-guard (agent, tool, input, cwd, context) so its
+ * security questions read the same shape; the efficiency keys live under context too.
  * @param {Action} action
  * @param {{kind:string, runner?:string}} cls
  * @param {View} v
- * @param {{history: {lines:string[], dropped:number, first_request:string|null}}} extra
  */
-export function buildState(action, cls, v, { home, history: h } = {}) {
-  const input = projectInput(action.tool, action.input, home);
-  const real = v.recent_instructions ?? [];
+export function buildState(action, cls, v, { home } = {}) {
+  const instructions = dedupe(v.recent_instructions);
   const context = {
-    history: h?.lines ?? [],
-    ...(h?.dropped && h.first_request ? { session_started_with: h.first_request, history_note: `${h.dropped} earlier lines omitted; session_started_with is the user's first request` } : {}),
-    proposed_call: describeCall(action.tool, input),
-    proposed_call_kind: cls.runner ? `${cls.kind} (${cls.runner})` : cls.kind,
-    // facts the ledger knows and the questions may cite; decided in code, shown to Jev for context only
-    facts: {
-      same_action_runs_since_last_user_message: v.same_action_count_since_last_prompt ?? 0,
-      last_outcome_of_this_action: v.last_outcome_of_this_action ?? "never ran",
-      changed_since_last_pass: v.changed_since_last_pass ?? [],
-      validity_of_last_pass: v.validity,
-    },
-    // jev-guard's security questions read these two
-    user_recent_messages: real,
-    recent_tool_calls: (v.recent ?? []).slice(-6).map((e) => `${e.tool} ${clip(e.preview, 80)}${e.result ? ` -> ${e.result}` : ""}`),
+    user_recent_messages: instructions,
+    recent_tool_calls: v.recent.map(describe),
+    // the request to judge against, and the session's opening request only when it is a different, older one
+    current_request: v.current_request ?? undefined,
+    original_request: v.original_request && v.original_request !== v.current_request ? v.original_request : undefined,
+    recent_instructions: instructions,
+    this_turn: { calls: v.calls_this_turn, reads: v.kinds_this_turn.read, searches: v.kinds_this_turn.search, checks: v.kinds_this_turn.check, edits: v.kinds_this_turn.edit },
+    proposed_action_kind: cls.runner ? `${cls.kind} (${cls.runner})` : cls.kind,
+    same_action_count_this_turn: v.same_action_count_this_turn,
+    last_outcome_of_this_action: v.last_outcome_of_this_action ?? "never ran",
+    changed_since_last_pass: v.changed_since_last_pass,
+    validity: v.validity,
   };
-  return { agent: action.agent, tool: action.tool, input, cwd: redact(String(action.cwd ?? ""), home), context };
+  for (const k of Object.keys(context)) if (context[k] === undefined || (Array.isArray(context[k]) && !context[k].length && k !== "changed_since_last_pass")) delete context[k];
+  return { agent: action.agent, tool: action.tool, input: projectInput(action.tool, action.input, home), cwd: redact(String(action.cwd ?? ""), home), context };
 }
 
-export { history };
+const dedupe = (arr) => arr.filter((x, i) => x && arr.indexOf(x) === i);

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assess, recordPrompt, recordResult, settings, shouldJudge } from "../src/core/guard.js";
 import { buildState, projectInput } from "../src/core/context.js";
-import { append, cwdIdOf, history, readEvents, replay, view } from "../src/core/ledger.js";
+import { cwdIdOf, readEvents, replay, view } from "../src/core/ledger.js";
 import { cacheKey, canonical, lookup, store } from "../src/core/cache.js";
 import { failingProvider, mockProvider } from "../src/providers/mock.js";
 
@@ -63,37 +63,21 @@ test("projectInput never forwards file bodies or patches, and redacts", () => {
   assert.deepEqual(g, { query: "q", nested: "{…}", list: "[2 items]", n: 3 });
 });
 
-test("buildState sends the conversation as history, the proposed call as one line, and the ledger's facts", () => {
+test("buildState keeps jev-guard's key names and adds the efficiency context", () => {
   const dir = fresh();
   recordPrompt(sid, "로그인 버그만 고쳐. DB는 건드리지 마.", { dir });
   const state = replay(readEvents(sid, dir));
   const v = view(state, { digest: "d", cwdId: cwdIdOf("/repo") });
-  const st = buildState(act("Bash", { command: "pytest -q" }), { kind: "check", runner: "test" }, v, { home: "/home/u", history: history(state) });
-  assert.deepEqual(st.context.history, ["user: 로그인 버그만 고쳐. DB는 건드리지 마."]);
-  assert.equal(st.context.proposed_call, "Bash pytest -q");
-  assert.equal(st.context.proposed_call_kind, "check (test)");
-  assert.deepEqual(st.context.facts, { same_action_runs_since_last_user_message: 0, last_outcome_of_this_action: "never ran", changed_since_last_pass: [], validity_of_last_pass: "none" });
-  assert.deepEqual(st.context.user_recent_messages, ["로그인 버그만 고쳐. DB는 건드리지 마."], "jev-guard's security questions still read this");
+  const st = buildState(act("Bash", { command: "pytest -q" }), { kind: "check", runner: "test" }, v, { home: "/home/u" });
+  assert.deepEqual(st.context.user_recent_messages, ["로그인 버그만 고쳐. DB는 건드리지 마."]);
+  assert.equal(st.context.current_request, "로그인 버그만 고쳐. DB는 건드리지 마.");
+  assert.equal(st.context.original_request, undefined, "same as current: not repeated as background");
+  assert.equal(st.context.proposed_action_kind, "check (test)");
+  assert.equal(st.context.validity, "none");
+  assert.deepEqual(st.context.this_turn, { calls: 0, reads: 0, searches: 0, checks: 0, edits: 0 });
   assert.equal(st.tool, "Bash");
   assert.deepEqual(st.input, { command: "pytest -q" });
-  assert.equal(st.context.session_started_with, undefined, "nothing dropped, so no separate first request");
-});
-
-test("history: user words verbatim and agent actions one line each, in order; synthetic prompts left out; tail-capped with the first request kept", () => {
-  const dir = fresh();
-  recordPrompt(sid, "테스트 파일은 건드리지 마.", { dir });
-  append(sid, { ev: "pre", turn: 1, tool_use_id: "a1", tool: "Edit", kind: "edit", digest: "d1", preview: "src/auth.py", paths: ["src/auth.py"], cwd: "/repo", exec: "running" }, { dir });
-  append(sid, { ev: "post", tool_use_id: "a1", exec: "completed", result: "pass" }, { dir });
-  recordPrompt(sid, "<bash-input>npm test</bash-input><bash-stdout>ok</bash-stdout>", { dir });
-  recordPrompt(sid, "아 이제 테스트 파일 수정해도 돼.", { dir });
-  append(sid, { ev: "pre", turn: 3, tool_use_id: "a2", tool: "Bash", kind: "check", digest: "d2", preview: "pytest -q", paths: [], cwd: "/repo", exec: "running" }, { dir });
-  const h = history(replay(readEvents(sid, dir)));
-  assert.deepEqual(h.lines, ["user: 테스트 파일은 건드리지 마.", "agent: Edit src/auth.py -> pass", "user: 아 이제 테스트 파일 수정해도 돼.", "agent: Bash pytest -q"]);
-  assert.equal(h.dropped, 0);
-  const capped = history(replay(readEvents(sid, dir)), { maxChars: 60 });
-  assert.ok(capped.dropped > 0 && capped.lines.length < 4);
-  assert.equal(capped.first_request, "테스트 파일은 건드리지 마.", "the opening request survives a cap separately");
-  assert.equal(capped.lines.at(-1), "agent: Bash pytest -q", "the newest lines are the ones kept");
+  assert.ok(!("recent_tool_calls" in st.context), "empty lists are dropped");
 });
 
 test("recordPrompt marks host-injected messages as synthetic", () => {
@@ -134,7 +118,7 @@ test("pipeline: a plain edit is judged and allowed; a read is skipped without a 
 
 test("pipeline: a repeated read in the same turn is judged; in shadow mode the advisory is logged, not emitted; in advise mode it is emitted once", async () => {
   const dir = fresh(); const logPath = join(dir, "decisions.jsonl");
-  const provider = mockProvider();   // a read that already passed since the user last spoke, nothing changed: the redundant fact
+  const provider = mockProvider();   // a read that already passed with nothing changed is the redundant rule, which outranks necessary
   recordPrompt(sid, "fix the login bug", { dir });
   const input = { file_path: "src/auth.py" };
   await assess(act("Read", input, { id: "r1" }), { provider, dir, logPath, env: {} });
@@ -144,7 +128,7 @@ test("pipeline: a repeated read in the same turn is judged; in shadow mode the a
   recordResult(sid, { toolUseId: "r2", tool: "Read", input }, { dir });
   const advise = await assess(act("Read", input, { id: "r3" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
   assert.equal(advise.emit.kind, "context");
-  assert.match(advise.emit.text, /#2 already ran this and passed since the user's last message/);
+  assert.match(advise.emit.text, /#2 ran this and passed; nothing observed changed since/);   // the most recent pass (r2), not the first
   recordResult(sid, { toolUseId: "r3", tool: "Read", input }, { dir });
   const again = await assess(act("Read", input, { id: "r4" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
   assert.equal(again.emit, null, "once per action per turn");
@@ -159,13 +143,9 @@ test("pipeline: scope expansion on an edit is an advisory, never a block; securi
   recordPrompt(sid, "로그인 버그만 고쳐. DB는 건드리지 마.", { dir });
   const mig = act("Write", { file_path: "db/migrations/0002_add_table.py", content: "migration" }, { id: "w1" });
   const shadow = await assess(mig, { provider, dir, logPath, env: {} });
-  assert.equal(shadow.decision, "ALLOW"); assert.equal(shadow.advisory.rule, "forbidden", "the user said DB는 건드리지 마 and this touches db/"); assert.equal(shadow.emit, null);
+  assert.equal(shadow.decision, "ALLOW"); assert.equal(shadow.advisory.rule, "scope"); assert.equal(shadow.emit, null);
   const advise = await assess(mig, { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
-  assert.equal(advise.emit.kind, "context"); assert.match(advise.emit.text, /the user said not to do this/);
-  // scope without a prohibition: an unrelated refactor under a narrow request
-  const refactor = act("Edit", { file_path: "src/billing/invoice.py", old_string: "class InvoiceBuilder", new_string: "class AbstractInvoiceFactory" }, { id: "w2" });
-  const sc = await assess(refactor, { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise", JEV_SAVE_COOLDOWN_CALLS: "0" } });   // the previous advisory was one call ago
-  assert.equal(sc.advisory.rule, "scope"); assert.match(sc.emit.text, /outside what the user asked for/);
+  assert.equal(advise.emit.kind, "context"); assert.match(advise.emit.text, /outside the request/);
   const rm = act("Bash", { command: "rm -rf /" }, { id: "b1" });
   assert.equal((await assess(rm, { provider, dir, logPath, env: {} })).emit, null);
   const denied = await assess(rm, { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
@@ -187,25 +167,12 @@ test("pipeline: redundant check after a pass with no change is an advisory; afte
   await assess(act("Bash", input, { id: "c1" }), { provider, dir, logPath, env: {} });
   recordResult(sid, { toolUseId: "c1", tool: "Bash", input, output: "===== 5 passed in 0.3s =====" }, { dir });
   const rep = await assess(act("Bash", input, { id: "c2" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
-  assert.equal(rep.advisory.rule, "redundant"); assert.match(rep.emit.text, /#1 already ran this and passed/);
+  assert.equal(rep.advisory.rule, "redundant"); assert.match(rep.emit.text, /#1 ran this and passed/);
   recordResult(sid, { toolUseId: "c2", tool: "Bash", input, output: "===== 5 passed in 0.3s =====" }, { dir });
   await assess(act("Edit", { file_path: "src/auth.py", old_string: "a", new_string: "b" }, { id: "e1" }), { provider, dir, logPath, env: {} });
   recordResult(sid, { toolUseId: "e1", tool: "Edit", input: { file_path: "src/auth.py" } }, { dir });
   const after = await assess(act("Bash", input, { id: "c3" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
   assert.notEqual(after.advisory?.rule, "redundant");
-  assert.equal(after.emit, null);
-});
-
-test("pipeline: a prohibition later lifted by the user is honoured — the model reads the words, no rule engine", async () => {
-  const dir = fresh(); const logPath = join(dir, "decisions.jsonl");
-  const provider = mockProvider();
-  recordPrompt(sid, "tests/ 폴더는 건드리지 마.", { dir });
-  const edit = act("Edit", { file_path: "tests/test_auth.py", old_string: "a", new_string: "b" }, { id: "e1" });
-  const before = await assess(edit, { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
-  assert.equal(before.advisory?.rule, "forbidden");
-  recordPrompt(sid, "아 이제 tests/ 수정해도 돼.", { dir });
-  const after = await assess(act("Edit", { file_path: "tests/test_auth.py", old_string: "a", new_string: "c" }, { id: "e2" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
-  assert.equal(after.advisory, null);
   assert.equal(after.emit, null);
 });
 

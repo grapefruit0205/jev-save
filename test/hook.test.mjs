@@ -63,7 +63,7 @@ test("handle: a whole turn through the hook, shadow then advise", async () => {
   assert.equal(await handle(pre("Bash", { command: "pytest -q" }, "u4"), o()), null);
   await handle(post("Bash", { command: "pytest -q" }, "u4", { stdout: "===== 3 passed in 0.1s =====" }), o());
   const out = await handle(pre("Bash", { command: "pytest -q" }, "u5"), o({ JEV_SAVE_MODE: "advise" }));
-    assert.match(out.hookSpecificOutput.additionalContext, /#4 already ran this and passed since the user's last message/);
+  assert.match(out.hookSpecificOutput.additionalContext, /#4 ran this and passed/);
   // unknown events and missing session ids are ignored
   assert.equal(await handle({ hook_event_name: "Stop", session_id: sid }, o()), null);
   assert.equal(await handle(pre("Edit", {}, "u9", { session_id: "" }), o()), null);
