@@ -2,6 +2,13 @@
 
 ## jev-save
 
+### Redesign: the user's words go to Jev as they were said (2026-09-21)
+- Jev now reads the session as a conversation — every real user utterance verbatim, every agent action as one line, in order, tail-capped at ~6k tokens — and answers three questions about the proposed call: `forbidden` (did the user say not to, and not since allow it), `needed` (does the current request still need this), `permitted` (did the user's own words ask for exactly this). No classifier decides what the user meant. Question bundle 3; jev-guard's `user_requested` is replaced by `permitted`.
+- Live probe, 13/13: prohibition, lifting, exception ("except secrets.ts"), revocation, a request that moved on, a pasted instruction, reading vs deleting. Through the real hook, 6/6.
+- Facts stay in the ledger and are decided in code: the probe showed Jev reads a consumed once-only permission (0.34) and a still-valid repeated check (0.39) poorly. `redundant` is now a ledger verdict (last pass valid, same action already ran since the user's last message), overridden only by a clear permission.
+- History is ordered by append position, not by the millisecond clock.
+- Advisories: `forbidden`, `stale`, `scope`, `redundant`. Mock provider reads the toy history the same way.
+
 ### Live validation round 1 (2026-09-21)
 - Orphaned ledger locks are reclaimed when provably dead — the owner's pid (now written into the lock) no longer exists, or the lock is older than 15 minutes, far past any hook's lifetime — instead of disabling the session for good. A lock whose owner may still be alive is still never stolen (the review's case is kept as a test). `doctor` and `stats` report held, orphaned and uncertain sessions.
 - Scope is judged against the user's most recent real instruction (`current_request`); the session's first prompt is background only. First wrong live advisory: a call 33 turns into a session was measured against the opening prompt while the user had long since moved on. Replayed with the real prompts, in_scope went from 0.06 to 0.91 and a genuinely off-request control still scored 0.87. Question bundle version 2.

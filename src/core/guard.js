@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { actionOutcome, classifyAction, digestOf, pathsOf, previewOf, redact, requiresSecurity } from "./evidence.js";
-import { append, cwdIdOf, DEFAULT_DIR, readEvents, replay, reserveCall, view } from "./ledger.js";
+import { append, cwdIdOf, DEFAULT_DIR, history, readEvents, replay, reserveCall, view } from "./ledger.js";
 import { buildState } from "./context.js";
 import { BUNDLE_VERSION, bundle } from "./questions.js";
 import { decide, thresholds } from "./policy.js";
@@ -106,7 +106,7 @@ export async function assess(action, { provider, env = process.env, config = {},
 
   const security = s.security !== "off" && cls.securityRequired;
   const questions = bundle({ security, untrusted: false });
-  const jevState = buildState(action, cls, v, { home });
+  const jevState = buildState(action, cls, v, { home, history: history(state) });
   const key = cacheKey(s.model, BUNDLE_VERSION, { state: jevState, questions });
   let answers = lookup(action.sessionId, dir, key);
   let cached = Boolean(answers), latencyMs = null;

@@ -186,7 +186,7 @@ export function replay(events, { now = Date.now() } = {}) {
   const entries = [];
   const byId = new Map();
   let seq = 0;
-  let turn = 0, attempts = 0, original_request = null, coverageUnknown = false;
+  let turn = 0, attempts = 0, original_request = null, coverageUnknown = false, order = 0;
   let lastPromptAt = -Infinity;
   for (const e of events) {
     if (e.ev === "snapshot") {
@@ -194,7 +194,7 @@ export function replay(events, { now = Date.now() } = {}) {
     } else if (e.ev === "attempt") { attempts++; }
     else if (e.ev === "gap") { coverageUnknown = true; }
     else if (e.ev === "prompt") {
-      prompts.push({ turn: ++turn, text: String(e.text ?? ""), digest: String(e.digest ?? ""), at: e.at ?? 0, synthetic: Boolean(e.synthetic) });
+      prompts.push({ turn: ++turn, text: String(e.text ?? ""), digest: String(e.digest ?? ""), at: e.at ?? 0, synthetic: Boolean(e.synthetic), order: order++ });
       if (!e.synthetic && original_request == null) original_request = String(e.text ?? "");
       lastPromptAt = e.at ?? lastPromptAt;
     } else if (e.ev === "pre") {
@@ -203,7 +203,7 @@ export function replay(events, { now = Date.now() } = {}) {
         runner: e.runner, digest: String(e.digest ?? ""), preview: String(e.preview ?? ""), paths: Array.isArray(e.paths) ? e.paths : [], cwd: String(e.cwd ?? ""), cwd_id: String(e.cwd_id ?? ""),
         decision: e.decision ?? "SKIP", judged: Boolean(e.judged), advised: Boolean(e.advised),
         exec: e.exec === "blocked" ? "blocked" : "running", result: null,
-        started_at: e.at ?? 0, ended_at: null, duration_ms: null,
+        started_at: e.at ?? 0, ended_at: null, duration_ms: null, order: order++,
       };
       entries.push(entry);
       if (e.judged && !e.attempt_recorded && !e.cached) attempts++; // pre-reservation ledgers
@@ -272,6 +272,7 @@ export function view(state, { digest, cwdId } = {}) {
     calls_this_turn: thisTurn.length,
     kinds_this_turn: kinds,
     same_action_count_this_turn: same.length,
+    same_action_count_since_last_prompt: entries.filter((e) => e.digest === digest && e.exec !== "blocked" && (real.length ? e.started_at >= real[real.length - 1].at : true)).length,
     last_outcome_of_this_action: lastOfAction?.result ?? null,
     last_pass_seq: v.lastPassSeq,
     changed_since_last_pass: v.changed,
@@ -282,6 +283,34 @@ export function view(state, { digest, cwdId } = {}) {
     advisories_for_this_action_this_turn: same.filter((e) => e.advised).length,
     calls_since_last_advisory: advisedIdx.length ? thisTurn.length - 1 - advisedIdx[advisedIdx.length - 1] : Infinity,
   };
+}
+
+const HISTORY_TOKENS = 6000;   // conservative: Korean ≈ 3 chars/token, so ≈ 18k chars
+const HISTORY_PROMPT_CLIP = 1500;
+const HISTORY_ACTION_CLIP = 100;
+
+/**
+ * The session as Jev reads it: every real user utterance verbatim (clipped per prompt) and every agent action
+ * as one line, in append order, tail-capped so the newest history always fits. Synthetic prompts (terminal
+ * echoes, injected context) are not the user speaking and are left out. Measured on the author's 30-day
+ * corpus: median session 155 tokens of user text, p90 9.3k, so the cap only bites the largest sessions and
+ * drops their oldest lines first — a constraint stated at the very start of a very long session can fall off;
+ * that is the known limit of this design and the reason the first prompt is kept separately when it falls out.
+ * @returns {{lines: string[], dropped: number, first_request: string|null}}
+ */
+export function history(state, { maxChars = HISTORY_TOKENS * 3 } = {}) {
+  const items = [];   // ordered by append position, not by the clock: several hooks can land in one millisecond
+  for (const p of state.prompts) if (!p.synthetic) items.push({ order: p.order ?? 0, line: `user: ${clip(p.text, HISTORY_PROMPT_CLIP)}` });
+  for (const e of state.entries) {
+    if (e.exec === "blocked") continue;
+    const tail = e.exec === "completed" || e.exec === "failed" ? ` -> ${e.result}` : e.exec === "unknown" ? " -> outcome unknown" : "";
+    items.push({ order: e.order ?? 0, line: `agent: ${e.tool} ${clip(e.preview, HISTORY_ACTION_CLIP)}${tail}` });
+  }
+  items.sort((a, b) => a.order - b.order);
+  let total = 0, start = items.length;
+  while (start > 0 && total + items[start - 1].line.length + 1 <= maxChars) { start--; total += items[start].line.length + 1; }
+  const real = state.prompts.filter((p) => !p.synthetic);
+  return { lines: items.slice(start).map((i) => i.line), dropped: start, first_request: start > 0 && real.length ? clip(real[0].text, HISTORY_PROMPT_CLIP) : null };
 }
 
 /** One line per entry for Jev's `recent_tool_calls`: "#12 Bash pytest -q -> pass". */
