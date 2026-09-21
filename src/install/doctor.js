@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { backend, DEFAULT_MODEL, ask, readConfig } from "../jev.js";
-import { DEFAULT_DIR } from "../core/ledger.js";
+import { DEFAULT_DIR, lockReport } from "../core/ledger.js";
 import { DEFAULT_LOG } from "../core/log.js";
 import { settings } from "../core/guard.js";
 import { installed } from "./hosts.js";
@@ -38,6 +38,8 @@ export async function doctor({ env = process.env, home = homedir(), cli, node, f
     ok(`${host} hook`, st.missing.length === 0, st.missing.length ? `missing ${st.missing.join(", ")} in ${file}: run \`jev-save install ${host}\`` : `${st.present.length} events registered in ${file}`);
   }
 
+  const locks = lockReport();
+  if (locks.locks.length || locks.uncertain.length) ok("ledger locks", locks.orphans.length === 0 && locks.uncertain.length === 0, `${locks.locks.length} lock(s) held (${locks.orphans.length} orphaned, reclaimed on next use), ${locks.uncertain.length} session(s) marked uncertain`);
   for (const [label, dir] of [["sessions dir", DEFAULT_DIR()], ["decision log", DEFAULT_LOG()]]) {
     try {
       let target = dir;

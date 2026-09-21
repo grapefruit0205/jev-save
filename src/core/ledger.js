@@ -10,7 +10,7 @@
 // Design: docs/design.md §4 (v0.2) and the v0.3 note. Replaces jev-guard's session.js for the guard path;
 // session.js stays for the adapters that still use it.
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import "./types.js";
@@ -21,6 +21,10 @@ const COMPACT_AT = 2 * 1024 * 1024;
 const KEEP_EVENTS = 400;
 const KEEP_PROMPTS = 20;
 const LOCK_WAIT_MS = 500;
+// A lock whose owner process no longer exists, or that is older than any hook the host could still be
+// running (ours time out at ≤ 10 s; Claude Code's default is 600 s), was left by a crashed writer.
+// Reclaiming it keeps one dead hook from silently disabling evidence for the rest of the session.
+const LOCK_ORPHAN_MS = 15 * 60_000;
 const UNKNOWN_AFTER_MS = 10 * 60_000;
 const CHANGE_KINDS = new Set(["edit", "write-bash", "other"]);
 const CLIP_PROMPT = 1500;
@@ -88,18 +92,46 @@ export function reserveCall(sessionId, { limit = 200, dir = DEFAULT_DIR(), now =
 
 /** Never steal a lock based on age: a paused writer may still own it. An orphaned lock disables evidence
  *  for this session until the user removes it after stopping the host; the tool itself still fails open. */
+/** mkdir is atomic on every platform: whoever creates the directory holds the lock, and writes its pid inside.
+ *  A lock is never taken over on age alone while its owner could still be alive (a paused writer may own it).
+ *  It is reclaimed only when provably orphaned: the owner pid is gone from this machine, or the lock is older
+ *  than LOCK_ORPHAN_MS. Whatever the dead writer was appending is lost either way; validityOf already treats
+ *  a missing completion as unknown, so reclaiming loses no safety and keeps the session alive. */
 function acquire(lock) {
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    try { mkdirSync(lock); return true; }
+    try { mkdirSync(lock); try { writeFileSync(join(lock, "pid"), String(process.pid)); } catch { /* the lock still holds */ } return true; }
     catch (err) {
       if (err?.code !== "EEXIST") return false;
+      if (isOrphan(lock)) { try { rmSync(lock, { recursive: true, force: true }); } catch { /* someone else did */ } continue; }
       if (Date.now() >= deadline) return false;
       sleepSync(3);
     }
   }
 }
-function release(lock) { try { rmdirSync(lock); } catch { /* best effort */ } }
+function isOrphan(lock) {
+  let age;
+  try { age = Date.now() - statSync(lock).mtimeMs; } catch { return false; }   // vanished: the retry will get it
+  if (age > LOCK_ORPHAN_MS) return true;
+  let pid;
+  try { pid = Number(readFileSync(join(lock, "pid"), "utf8")); } catch { return false; }   // no pid yet: owner is between mkdir and write, alive
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try { process.kill(pid, 0); return false; }                        // signal 0: the process exists (EPERM: exists, not ours)
+  catch (e) { return e?.code === "ESRCH"; }
+}
+function release(lock) { try { rmSync(lock, { recursive: true, force: true }); } catch { /* best effort */ } }
+/** Held, orphaned and uncertain markers under the sessions dir, for `doctor` and `stats`. */
+export function lockReport(dir = DEFAULT_DIR()) {
+  const out = { locks: [], orphans: [], uncertain: [] };
+  let files;
+  try { files = readdirSync(dir); } catch { return out; }
+  for (const f of files) {
+    const p = join(dir, f);
+    if (f.endsWith(".lock")) { out.locks.push(p); if (isOrphan(p)) out.orphans.push(p); }
+    else if (f.endsWith(".uncertain")) out.uncertain.push(p);
+  }
+  return out;
+}
 function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
 /** Keep the last KEEP_EVENTS events and the last KEEP_PROMPTS prompts; a `post` whose `pre` was dropped is
