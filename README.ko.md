@@ -100,6 +100,7 @@ Claude Code는 hook을 바로 읽습니다. 실행 중인 세션에도 적용됩
 | `JEV_SAVE_NECESSARY_P` `JEV_SAVE_EXPANSION_P` `JEV_SAVE_INSCOPE_P` `JEV_SAVE_REDUNDANT_P` | `0.20` `0.85` `0.15` `0.85` | 권고 임계값. 실험용 초기값 |
 | `JEV_SAVE_MAX_ADVISORIES` `JEV_SAVE_COOLDOWN_CALLS` | `3` `2` | 턴당 권고 상한, 권고 사이의 호출 수 |
 | `JEV_SAVE_CHECK` | | 프로젝트 고유 검사 명령을 나타내는 regex |
+| `JEV_SAVE_JUDGE_KINDS` | `edit,write-bash,other,check,vcs,external-write` | 항상 판단하는 kind. 일회성 스크립트와 heredoc이 많은 세션은 `edit,check,vcs,external-write`로 좁힐 수 있음. 저자 corpus에서는 기본값이 호출의 77%를 판단해 하루 약 3.5분을 기다림 |
 | `JEV_SAVE_SKIP_TOOLS` | | 판단하지 않을 도구 이름 |
 | `JEV_SAVE_FAIL_CLOSED` | 없음 | Jev 장애 시 deny (보안 대상 호출, advise 모드) |
 | `JEV_MODEL` | `jev-1.13.0` | shadow 로그의 비교 가능성을 위해 고정 |

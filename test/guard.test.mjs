@@ -34,6 +34,13 @@ test("shouldJudge: edits, writes, scripts and checks always; reads only on repea
   assert.equal(shouldJudge({ kind: "external-write" }, v({}), s).judge, true);
   assert.equal(shouldJudge({ kind: "external" }, v({}), s).judge, false);
   assert.equal(shouldJudge({ kind: "edit" }, v({ jev_calls: 200 }), s).why, "budget");
+  // a narrower set for bash-heavy sessions: scripts and shell writes are left alone, reads keep their rule
+  const narrow = settings({ JEV_SAVE_JUDGE_KINDS: "edit, check,vcs,external-write" });
+  assert.equal(shouldJudge({ kind: "write-bash" }, v({}), narrow).judge, false);
+  assert.equal(shouldJudge({ kind: "other" }, v({}), narrow).judge, false);
+  assert.equal(shouldJudge({ kind: "edit" }, v({}), narrow).judge, true);
+  assert.equal(shouldJudge({ kind: "check" }, v({}), narrow).judge, true);
+  assert.equal(shouldJudge({ kind: "read" }, v({ same_action_count_this_turn: 1 }), narrow).why, "repeat");
 });
 
 test("projectInput never forwards file bodies or patches, and redacts", () => {

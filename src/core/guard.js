@@ -17,7 +17,7 @@ import "./types.js";
 
 const READ_LIKE = new Set(["read", "search", "external"]);
 // vcs and external-write carry no tree change but a side effect (push, send, delete): jev-guard's security questions apply.
-const ALWAYS = new Set(["edit", "write-bash", "other", "check", "vcs", "external-write"]);
+export const DEFAULT_JUDGE_KINDS = ["edit", "write-bash", "other", "check", "vcs", "external-write"];
 
 /** `config` is ~/.jev-save/config.json as read by the caller (jev.js readConfig); the environment wins over it. */
 export function settings(env = process.env, config = {}) {
@@ -30,6 +30,10 @@ export function settings(env = process.env, config = {}) {
     security: env.JEV_SAVE_SECURITY !== "0",
     failClosed: Boolean(env.JEV_SAVE_FAIL_CLOSED),
     skipTools: new Set((env.JEV_SAVE_SKIP_TOOLS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)),
+    // Which kinds are always judged. A bash-first workflow where most calls are one-off scripts and shell writes
+    // (77% of calls judged on the author's corpus, ~3.5 min of waiting a day) can narrow this to what carries scope:
+    // JEV_SAVE_JUDGE_KINDS=edit,check,vcs,external-write. Reads still follow the repeat / long-turn rule.
+    judgeKinds: new Set(env.JEV_SAVE_JUDGE_KINDS ? env.JEV_SAVE_JUDGE_KINDS.split(",").map((s) => s.trim()).filter(Boolean) : DEFAULT_JUDGE_KINDS),
     model: env.JEV_MODEL ?? DEFAULT_MODEL,
   };
 }
@@ -37,7 +41,7 @@ export function settings(env = process.env, config = {}) {
 /** Should this call cost a Jev round trip? docs/design.md v0.3 "언제 Jev를 부르는가". */
 export function shouldJudge(cls, v, s) {
   if (v.jev_calls >= s.maxCalls) return { judge: false, why: "budget" };
-  if (ALWAYS.has(cls.kind)) return { judge: true };
+  if (s.judgeKinds.has(cls.kind)) return { judge: true };
   if (READ_LIKE.has(cls.kind)) {
     if (v.same_action_count_this_turn >= 1) return { judge: true, why: "repeat" };
     if (v.calls_this_turn >= s.longTurn) return { judge: true, why: "long-turn" };

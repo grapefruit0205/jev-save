@@ -18,6 +18,8 @@
 - Digests cover the whole tool input (canonical JSON): two edits of one file are two actions, and a shell command keeps its inner whitespace.
 - Ledger appends take the compaction lock, so a compaction can no longer drop a line another process appended between its read and its rename; covered by a four-process test that loses events without the lock.
 
+- `JEV_SAVE_JUDGE_KINDS` selects the kinds that are always judged (default unchanged). Measured on the author's corpus: the default judges 77% of calls, ≈3.5 min of waiting a day; a bash-first session can narrow it to `edit,check,vcs,external-write`.
+
 ## Upstream history (jev-guard, before the fork)
 
 ## 0.3.1 — 2026-09-18

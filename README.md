@@ -100,6 +100,7 @@ Claude Code picks the hooks up at once, even in a running session. Codex needs t
 | `JEV_SAVE_NECESSARY_P` `JEV_SAVE_EXPANSION_P` `JEV_SAVE_INSCOPE_P` `JEV_SAVE_REDUNDANT_P` | `0.20` `0.85` `0.15` `0.85` | advisory thresholds — experimental initial values |
 | `JEV_SAVE_MAX_ADVISORIES` `JEV_SAVE_COOLDOWN_CALLS` | `3` `2` | per-turn budget, calls between advisories |
 | `JEV_SAVE_CHECK` | | regex naming your own check command |
+| `JEV_SAVE_JUDGE_KINDS` | `edit,write-bash,other,check,vcs,external-write` | kinds always judged; bash-heavy sessions (one-off scripts, heredocs) can narrow it to `edit,check,vcs,external-write` — on the author's corpus the default judges 77% of calls, about 3.5 min of waiting a day |
 | `JEV_SAVE_SKIP_TOOLS` | | tool names never judged |
 | `JEV_SAVE_FAIL_CLOSED` | unset | deny (security-bearing calls, advise mode) when Jev is unreachable |
 | `JEV_MODEL` | `jev-1.13.0` | pinned so shadow logs stay comparable |
