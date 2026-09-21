@@ -1,6 +1,17 @@
 {
-  "description": "jev-guard: assess every tool call before it runs; scan every tool result for AI-directed instructions; remember the user's prompts and flagged content per session; sweep instruction files at session start. PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/InstructionsLoaded serve Claude Code and Copilot CLI; BeforeTool/AfterTool/BeforeAgent serve Gemini CLI (its sweep runs on the first prompt); each host ignores the other's keys.",
+  "description": "jev-save: before each tool call, Jev judges whether it is still necessary, whether it repeats a still-valid result and whether it widens the user's request (plus jev-guard's security questions); results and prompts feed a per-session ledger. Shadow mode by default (log only); `jev-save mode advise` turns advisories on.",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/cli.js\" hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": ".*",
@@ -8,7 +19,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/cli.js\" hook",
-            "timeout": 30
+            "timeout": 10
           }
         ]
       }
@@ -20,76 +31,19 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/cli.js\" hook",
-            "timeout": 30
+            "timeout": 10
           }
         ]
       }
     ],
-    "UserPromptSubmit": [
+    "PostToolUseFailure": [
       {
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/cli.js\" hook",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/cli.js\" hook",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "InstructionsLoaded": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/cli.js\" hook",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "BeforeTool": [
-      {
-        "hooks": [
-          {
-            "name": "jev-guard",
-            "type": "command",
-            "command": "node \"${extensionPath}/src/cli.js\" hook",
-            "timeout": 30000
-          }
-        ]
-      }
-    ],
-    "AfterTool": [
-      {
-        "hooks": [
-          {
-            "name": "jev-guard",
-            "type": "command",
-            "command": "node \"${extensionPath}/src/cli.js\" hook",
-            "timeout": 30000
-          }
-        ]
-      }
-    ],
-    "BeforeAgent": [
-      {
-        "hooks": [
-          {
-            "name": "jev-guard",
-            "type": "command",
-            "command": "node \"${extensionPath}/src/cli.js\" hook",
-            "timeout": 30000
+            "timeout": 10
           }
         ]
       }

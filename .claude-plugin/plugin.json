@@ -1,11 +1,11 @@
 {
-  "name": "jev-guard",
-  "version": "0.3.1",
-  "description": "Prompt-injection and dangerous-action guard for coding agents, powered by Jev.",
+  "name": "jev-save",
+  "version": "0.1.0",
+  "description": "Runtime efficiency guard for coding agents: Jev judges each tool call for redundancy, necessity and scope before it runs. Built on jev-guard.",
   "author": {
-    "name": "leepokai"
+    "name": "grapefruit0205"
   },
   "license": "MIT",
-  "homepage": "https://github.com/leepokai/jev-guard",
-  "repository": "https://github.com/leepokai/jev-guard"
+  "homepage": "https://github.com/grapefruit0205/jev-save",
+  "repository": "https://github.com/grapefruit0205/jev-save"
 }

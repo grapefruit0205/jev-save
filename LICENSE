@@ -1,6 +1,23 @@
 MIT License
 
+Copyright (c) 2026 grapefruit0205 (jev-save)
+
+This project is a fork of jev-guard and vendors code from jev-belay and
+claude-jev. Their notices are reproduced below and apply to the portions
+derived from each.
+
+--------------------------------------------------------------------------
+jev-guard — https://github.com/leepokai/jev-guard
 Copyright (c) 2026 leepokai
+
+jev-belay — https://github.com/valentynkit/jev-belay
+Copyright (c) 2026 valentynkit
+(the runner-detection regex and output parsers in jev-belay are in turn
+adapted from pi-warden — https://github.com/DevMortimer/pi-warden, MIT)
+
+claude-jev — https://github.com/0x7067/claude-jev
+Copyright (c) 2026 0x7067
+--------------------------------------------------------------------------
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

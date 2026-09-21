@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { INSTRUCTION_FILE, instructionMessage, judgeInstructions, scanInstructions, thresholds } from "./guard.js";
 
-const CACHE = () => process.env.JEV_GUARD_SCAN_CACHE ?? join(homedir(), ".jev-guard", "scan-cache.json");
+const CACHE = () => process.env.JEV_SAVE_SCAN_CACHE ?? join(homedir(), ".jev-save", "scan-cache.json");
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", "logos", "video", ".tmp", "tmp", "worktrees", "vendor_imports", "marketplaces", "repos"]);
 const MAX_DEPTH = 7;
 

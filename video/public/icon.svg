@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <g id="icon">
-    <path fill="#2563EB" d="M96 40H416A40 40 0 0 1 456 80V256C456 348 372 432 272 470Q256 476 240 470C140 432 56 348 56 256V80A40 40 0 0 1 96 40Z"/>
-    <path fill="none" stroke="#FFFFFF" stroke-width="64" stroke-linecap="round" stroke-linejoin="round" d="M320 136V284A64 64 0 0 1 192 284V252"/>
-  </g>
-</svg>

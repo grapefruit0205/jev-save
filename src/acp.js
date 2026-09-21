@@ -1,4 +1,4 @@
-// `jev-guard acp -- <agent command...>`: a stdio proxy between any ACP client (Zed, JetBrains, ...) and any ACP agent.
+// `jev-save acp -- <agent command...>`: a stdio proxy between any ACP client (Zed, JetBrains, ...) and any ACP agent.
 // Guards what flows through the client: terminal/create and fs/write_text_file are assessed before they are forwarded
 // (ask → session/request_permission to the client), and fs/read_text_file / terminal/output results are scanned on the way
 // back. Tools the agent runs on its own (its built-in web fetch, say) never pass through here and are not covered.
@@ -14,7 +14,7 @@ export function runProxy(cmd, args, { stdin = process.stdin, stdout = process.st
   const opts = { env, fetchImpl };
   const toClient = (m) => stdout.write(JSON.stringify(m) + "\n");
   const toAgent = (m) => child.stdin.write(JSON.stringify(m) + "\n");
-  const warn = (err) => process.stderr.write(`jev-guard: ${err.message ?? err}\n`);
+  const warn = (err) => process.stderr.write(`jev-save: ${err.message ?? err}\n`);
 
   let seq = 0;
   const ours = new Map();      // id of a request we sent to the client → resolve
@@ -22,7 +22,7 @@ export function runProxy(cmd, args, { stdin = process.stdin, stdout = process.st
   const intents = new Map();   // sessionId → the agent's current message text, rebuilt from agent_message_chunk updates
 
   function askClient(method, params) {
-    const id = `jev-guard:${++seq}`;
+    const id = `jev-save:${++seq}`;
     return new Promise((resolve) => { ours.set(id, resolve); toClient({ jsonrpc: "2.0", id, method, params }); });
   }
 
@@ -50,13 +50,13 @@ export function runProxy(cmd, args, { stdin = process.stdin, stdout = process.st
     let r;
     const context = buildContext({ sessionId: p.sessionId, intent: intents.get(p.sessionId)?.slice(-1500) });
     try { r = await assessAction({ tool, input, cwd: p.cwd, agent: "acp", context }, opts); }
-    catch (err) { warn(err); if (!env.JEV_GUARD_FAIL_CLOSED) return null; r = { level: "deny", message: `jev-guard unavailable: ${err.message}` }; }
+    catch (err) { warn(err); if (!env.JEV_SAVE_FAIL_CLOSED) return null; r = { level: "deny", message: `jev-save unavailable: ${err.message}` }; }
     if (r) remember(p.sessionId, "calls", { tool, preview: preview(input, 100), level: r.level });
     if (!r || r.level === "allow") return null;
     if (r.level === "ask") {
       const res = await askClient("session/request_permission", {
         sessionId: p.sessionId,
-        toolCall: { toolCallId: `jev-guard-${seq + 1}`, title: `jev-guard: ${tool} ${preview(input)}`, kind, status: "pending", rawInput: input },
+        toolCall: { toolCallId: `jev-save-${seq + 1}`, title: `jev-save: ${tool} ${preview(input)}`, kind, status: "pending", rawInput: input },
         options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "reject", name: "Reject", kind: "reject_once" }],
       });
       const o = res?.result?.outcome;

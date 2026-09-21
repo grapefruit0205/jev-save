@@ -1,10 +1,10 @@
 {
-  "name": "jev-guard",
-  "version": "0.3.1",
-  "description": "Prompt-injection and dangerous-action guard for coding agents (Claude Code, Codex, pi, ACP), powered by Jev.",
+  "name": "jev-save",
+  "version": "0.1.0",
+  "description": "Runtime efficiency guard for coding agents (Claude Code, Codex): Jev judges each tool call for redundancy, necessity and scope before it runs.",
   "type": "module",
   "bin": {
-    "jev-guard": "src/cli.js"
+    "jev-save": "src/cli.js"
   },
   "exports": {
     ".": "./src/opencode.js",
@@ -23,11 +23,10 @@
     ".cursor-plugin",
     ".agents",
     "assets/icon.svg",
-    "assets/icon-512.png",
-    "assets/works-with.svg"
+    "assets/icon-512.png"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js test/*.test.mjs"
   },
   "engines": {
     "node": ">=20.3"
@@ -48,28 +47,28 @@
   "keywords": [
     "jev",
     "typesafe",
-    "prompt-injection",
-    "security",
+    "coding-agent",
     "hooks",
     "claude-code",
     "codex",
-    "copilot",
-    "gemini-cli",
-    "cursor",
-    "pi-package",
-    "opencode-plugin",
-    "acp"
+    "redundant-verification",
+    "scope-creep",
+    "runtime-guard"
   ],
-  "author": "leepokai",
+  "author": "grapefruit0205",
+  "contributors": [
+    "leepokai (jev-guard)",
+    "valentynkit (jev-belay)"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/leepokai/jev-guard.git"
+    "url": "git+https://github.com/grapefruit0205/jev-save.git"
   },
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/leepokai/jev-guard#readme",
+  "homepage": "https://github.com/grapefruit0205/jev-save#readme",
   "main": "src/opencode.js",
-  "bugs": "https://github.com/leepokai/jev-guard/issues"
+  "bugs": "https://github.com/grapefruit0205/jev-save/issues"
 }

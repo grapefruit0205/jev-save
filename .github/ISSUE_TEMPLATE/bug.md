@@ -7,8 +7,8 @@ about: Something was allowed, denied, or flagged wrongly — or a host integrati
 
 **What the agent tried** (tool name + input, redact secrets):
 
-**What jev-guard said** (the `jev-guard: …` line, with risk / approval / p numbers):
+**What jev-save said** (the `jev-save: …` line, with risk / approval / p numbers):
 
 **What you expected:**
 
-**`jev-guard check` / `scan` output for the same input, if you can reproduce it:**
+**`jev-save check` / `scan` output for the same input, if you can reproduce it:**

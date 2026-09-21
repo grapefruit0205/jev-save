@@ -1,15 +1,15 @@
 {
-  "name": "jev-guard",
-  "version": "0.3.1",
-  "description": "Prompt-injection and dangerous-action guard for coding agents, powered by Jev.",
-  "author": { "name": "leepokai" },
+  "name": "jev-save",
+  "version": "0.1.0",
+  "description": "Runtime efficiency guard for coding agents: Jev judges each tool call for redundancy, necessity and scope before it runs. Built on jev-guard.",
+  "author": { "name": "grapefruit0205" },
   "license": "MIT",
   "hooks": "./hooks/codex.json",
   "interface": {
-    "displayName": "Jev Guard",
-    "shortDescription": "Block dangerous tool calls, flag prompt injection",
-    "longDescription": "Every tool call is risk-scored by Jev before it runs (destructive calls are denied); every tool result is scanned for text aimed at AI agents and flagged as untrusted.",
-    "developerName": "leepokai",
+    "displayName": "Jev Save",
+    "shortDescription": "Skip nothing by guess; stop repeating what is already verified",
+    "longDescription": "Before a tool call runs, Jev is asked whether it is still necessary, whether it repeats a check that is still valid, and whether it widens the user's request. Redundant checks and scope creep get a short corrective message; risky calls keep jev-guard's security gate. Shadow mode by default: it records what it would have said until you turn enforcement on.",
+    "developerName": "grapefruit0205",
     "category": "Developer Tools",
     "capabilities": ["Lifecycle hooks", "Security"]
   }

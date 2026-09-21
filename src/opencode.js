@@ -1,17 +1,17 @@
-// OpenCode plugin. `jev-guard install opencode` drops a one-line shim into ~/.config/opencode/plugins/ that re-exports this.
+// OpenCode plugin. `jev-save install opencode` drops a one-line shim into ~/.config/opencode/plugins/ that re-exports this.
 // tool.execute.before throws to block; permission.ask (only fires for tools you set to "ask" in opencode.json)
-// lets jev-guard auto-approve the safe calls and keep the prompt for the risky ones; tool.execute.after flags results.
+// lets jev-save auto-approve the safe calls and keep the prompt for the risky ones; tool.execute.after flags results.
 import { assessAction, scanContent, preview, excerpt, INSTRUCTION_FILE } from "./guard.js";
 import { scanInstructionsCached } from "./skills.js";
 import { buildContext, messagesFrom } from "./context.js";
 import { readSession, remember } from "./session.js";
 
-export const JevGuard = async ({ client, directory }) => {
+export const JevSave = async ({ client, directory }) => {
   const toast = (message, variant = "warning") =>
-    client?.tui?.showToast?.({ body: { title: "jev-guard", message, variant, duration: 8000 } }).catch(() => {});
+    client?.tui?.showToast?.({ body: { title: "jev-save", message, variant, duration: 8000 } }).catch(() => {});
   const failOpen = (err) => {
     toast(err.message, "error");
-    if (process.env.JEV_GUARD_FAIL_CLOSED) throw new Error(`jev-guard unavailable: ${err.message}`);
+    if (process.env.JEV_SAVE_FAIL_CLOSED) throw new Error(`jev-save unavailable: ${err.message}`);
     return null;
   };
 

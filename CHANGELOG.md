@@ -1,5 +1,18 @@
 # Changelog
 
+## jev-save
+
+### 0.1.0 — unreleased
+- Forked from leepokai/jev-guard 0.3.1 at 94996ea. Renamed package, CLI, env prefix (`JEV_SAVE_*`), config dir (`~/.jev-save`).
+- `TYPESAFE_API_KEY` accepted first; model pinned to `jev-1.13.0`.
+- Dropped the jev-guard launch video and marketing assets.
+- Stage 1: `src/core/evidence.js` (jev-belay's runner regex and output parsers, a segment-based shell classifier), `tools/extract-corpus.mjs`, `tools/baserate.mjs`; base rate recorded in `docs/baserate-2026-09-21.md`.
+- Stage 2: append-only session ledger with execution lifecycle and a `valid / stale / unknown` validity signal; Jev question bundle (in_scope, necessary, redundant, scope_expansion, kind + jev-guard's security questions); pure policy with one advisory per call and suppression rules; answer cache; decision log; `DecisionProvider` seam with Jev and mock providers.
+- Stage 3: Claude Code and Codex adapters, `jev-save hook`, plugin manifests (PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit), `install`/`uninstall` with backups and an exact registry, `doctor`, `mode`, `check --task`, `stats`. jev-guard's hook stays reachable as `hook --legacy` for the other hosts.
+- First live run against `jev-1.13.0` (585–950 ms per call): a migration write and an unrelated refactor under "fix the login bug only" scored scope_expansion 0.97 / 0.90, an in-scope edit 0.13, a test file for the fix 0.27; `rm -rf /` risk 3 → deny; `git push --force` risk 2 → ask. Two adjustments from it: approval alone no longer asks below the risk threshold (the scope advisory owns that), and `vcs` / MCP write tools are judged for the security questions.
+
+## Upstream history (jev-guard, before the fork)
+
 ## 0.3.1 — 2026-09-18
 - Jev calls retry on 429/5xx *and* network errors inside one time budget (`JEV_GUARD_TIMEOUT_MS`, 20 s), so a hook never outlives its host's ~30 s timeout and fail-closed actually fails closed.
 - Instruction-file scans share one content-hash cache across the session-start sweep, `InstructionsLoaded`, `Read`/`Skill` results and `scan-skills`; cache hits carry only Jev's answer and the verdict is rebuilt.

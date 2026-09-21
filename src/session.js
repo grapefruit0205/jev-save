@@ -1,12 +1,12 @@
 // Per-session memory shared by hook invocations, which are separate processes on most hosts.
-// One small JSON file per session under ~/.jev-guard/sessions: recent user prompts, the agent's stated intent,
+// One small JSON file per session under ~/.jev-save/sessions: recent user prompts, the agent's stated intent,
 // recent decisions, and every flagged piece of untrusted content — so a later tool call can be judged against them.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const DIR = () => process.env.JEV_GUARD_SESSIONS ?? join(homedir(), ".jev-guard", "sessions");
+const DIR = () => process.env.JEV_SAVE_SESSIONS ?? join(homedir(), ".jev-save", "sessions");
 const CAPS = { prompts: 6, intents: 3, calls: 12, flags: 10 };
 const EMPTY = () => ({ prompts: [], intents: [], calls: [], flags: [] });
 

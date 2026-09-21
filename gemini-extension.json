@@ -1,7 +1,7 @@
 {
-  "name": "jev-guard",
-  "version": "0.3.1",
-  "description": "Prompt-injection and dangerous-action guard for coding agents, powered by Jev. Denies destructive tool calls, warns on risky ones, flags AI-directed text in tool results.",
+  "name": "jev-save",
+  "version": "0.1.0",
+  "description": "Runtime efficiency guard for coding agents: Jev judges each tool call for redundancy, necessity and scope before it runs. Built on jev-guard. Denies destructive tool calls, warns on risky ones, flags AI-directed text in tool results.",
   "settings": [
     { "name": "Jev API key", "description": "TypeSafe key from console.typesafe.ai (leave empty if you use the AI Gateway key).", "envVar": "JEV_API_KEY", "sensitive": true },
     { "name": "Vercel AI Gateway key", "description": "Alternative to the Jev key: a vck_… key for model typesafe-ai/jev.", "envVar": "AI_GATEWAY_API_KEY", "sensitive": true }
