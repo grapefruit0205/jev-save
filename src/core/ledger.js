@@ -10,7 +10,7 @@
 // Design: docs/design.md §4 (v0.2) and the v0.3 note. Replaces jev-guard's session.js for the guard path;
 // session.js stays for the adapters that still use it.
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import "./types.js";
@@ -21,10 +21,6 @@ const COMPACT_AT = 2 * 1024 * 1024;
 const KEEP_EVENTS = 400;
 const KEEP_PROMPTS = 20;
 const LOCK_WAIT_MS = 500;
-// A lock whose owner process is gone, or that is older than any hook the host would still be running
-// (Claude Code kills a command hook at its timeout; ours are ≤ 10 s, the host's default is 600 s), is an
-// orphan: reclaiming it is what keeps one crashed hook from silently disabling the rest of the session.
-const LOCK_ORPHAN_MS = 15 * 60_000;
 const UNKNOWN_AFTER_MS = 10 * 60_000;
 const CHANGE_KINDS = new Set(["edit", "write-bash", "other"]);
 const CLIP_PROMPT = 1500;
@@ -90,46 +86,20 @@ export function reserveCall(sessionId, { limit = 200, dir = DEFAULT_DIR(), now =
   finally { release(lock); }
 }
 
-/** mkdir is atomic on every platform: whoever creates the directory holds the lock, and writes its pid inside.
- *  A lock is never taken over on age alone within the window a live hook could still hold it (a paused writer
- *  may own it — review). It is reclaimed only when it is provably orphaned: its owner pid no longer exists on
- *  this machine, or it is older than LOCK_ORPHAN_MS. Recovery is logged as a `gap` for the entries the dead
- *  writer may have lost, which validityOf already treats as unknown, but it does not disable the session. */
+/** Never steal a lock based on age: a paused writer may still own it. An orphaned lock disables evidence
+ *  for this session until the user removes it after stopping the host; the tool itself still fails open. */
 function acquire(lock) {
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    try { mkdirSync(lock); try { writeFileSync(join(lock, "pid"), String(process.pid)); } catch { /* the lock still holds */ } return true; }
+    try { mkdirSync(lock); return true; }
     catch (err) {
       if (err?.code !== "EEXIST") return false;
-      if (isOrphan(lock)) { try { rmSync(lock, { recursive: true, force: true }); } catch { /* someone else did */ } continue; }
       if (Date.now() >= deadline) return false;
       sleepSync(3);
     }
   }
 }
-function isOrphan(lock) {
-  let age;
-  try { age = Date.now() - statSync(lock).mtimeMs; } catch { return false; }   // vanished: the retry will get it
-  if (age > LOCK_ORPHAN_MS) return true;
-  let pid;
-  try { pid = Number(readFileSync(join(lock, "pid"), "utf8")); } catch { return false; }   // no pid yet (owner between mkdir and write): live
-  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
-  try { process.kill(pid, 0); return false; }                        // signal 0: exists (or EPERM: exists, not ours)
-  catch (e) { return e?.code === "ESRCH"; }
-}
-function release(lock) { try { rmSync(lock, { recursive: true, force: true }); } catch { /* best effort */ } }
-/** `jev-save doctor` / `stats`: orphaned locks and uncertain markers under the sessions dir. */
-export function lockReport(dir = DEFAULT_DIR()) {
-  const out = { locks: [], orphans: [], uncertain: [] };
-  let files;
-  try { files = readdirSync(dir); } catch { return out; }
-  for (const f of files) {
-    const p = join(dir, f);
-    if (f.endsWith(".lock")) { out.locks.push(p); if (isOrphan(p)) out.orphans.push(p); }
-    else if (f.endsWith(".uncertain")) out.uncertain.push(p);
-  }
-  return out;
-}
+function release(lock) { try { rmdirSync(lock); } catch { /* best effort */ } }
 function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
 /** Keep the last KEEP_EVENTS events and the last KEEP_PROMPTS prompts; a `post` whose `pre` was dropped is
@@ -262,11 +232,6 @@ export function view(state, { digest, cwdId } = {}) {
   return {
     turn,
     original_request: state.original_request != null ? clip(state.original_request, CLIP_PROMPT) : real.length ? clip(real[0].text, CLIP_PROMPT) : null,
-    // The request a call is judged against is the user's most recent real instruction, not the session's first
-    // one: after thirty turns the first prompt is background. (First wrong live advisory: "outside the request"
-    // measured against a 33-turn-old prompt while the user had long since steered elsewhere.)
-    current_request: real.length ? clip(real[real.length - 1].text, CLIP_PROMPT) : null,
-    turns_since_current_request: real.length ? turn - real[real.length - 1].turn : null,
     recent_instructions: real.slice(-3).map((p) => clip(p.text, CLIP_INSTRUCTION)),
     recent: entries.slice(-10),
     calls_this_turn: thisTurn.length,

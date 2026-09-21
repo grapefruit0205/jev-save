@@ -67,8 +67,6 @@ tool result ──► PostToolUse hook ─────► ledger: outcome (pass 
 
 **Evidence stays conservative.** A later failure of the same action invalidates an earlier pass; a later unknown or unfinished run makes it uncertain. Every ledger append and compaction uses the same lock. Compaction preserves the original request, total attempt count and sequence/turn numbering independently of the retained history. After a lock timeout or write failure, a `.jsonl.uncertain` marker makes validity unknown and disables new provider attempts for that session. Tools continue to run. Locks are never stolen based on age: after a crashed writer leaves an orphaned lock, start a new session; stop the host before manually cleaning up abandoned session files.
 
-**Validation is a loop, not a wait.** `jev-save review` lists every advisory with its signals and the agent's next call; `jev-save label` records whether it was right; `stats` turns the labels into precision per rule. The first live round changed the design once already: an advisory judged a call against the session's opening prompt thirty turns later, so scope is now measured against the user's most recent instruction.
-
 **Shadow first, but not for long.** The shipped default records every judgment in `~/.jev-save/decisions.jsonl` and sends nothing to the agent. Advise mode logs exactly the same, so switching early costs little: a wrong efficiency advisory is one line the agent can ignore, and the log still says what fired and whether the agent changed course. What a shadow period buys is a clean baseline without advisories, which the fixture A/B can supply later. The one thing to decide before switching is the security gate: its `ask` becomes a real permission prompt (a `sed -i` edit scored risk 1.7 live), so a host that already runs its own permission classifier should set `jev-save security log`.
 
 ## Install
@@ -89,8 +87,7 @@ As a plugin instead: `/plugin marketplace add grapefruit0205/jev-save` then `/pl
 jev-save mode advise                          # turn advisories on (default: shadow, log only); every judgment is still logged
 jev-save security log                         # keep jev-guard's deny/ask as a record only (Claude Code's own permission layer stays in charge)
 jev-save check --task "fix login" Bash '{"command":"pytest -q"}'   # judge one call, print the signals
-jev-save stats --days 7                       # what the decision log says, with a per-rule scorecard from your labels
-jev-save review --unlabeled                   # each advisory: signals, what the agent did next; then label #n right|wrong|unsure "why"
+jev-save stats --days 7                       # what the decision log says
 jev-save uninstall claude                     # removes only the entries install recorded; backups stay
 JEV_SAVE_PROVIDER=mock jev-save check …       # the offline mock provider, no key needed
 ```

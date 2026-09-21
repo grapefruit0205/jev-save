@@ -5,7 +5,7 @@ import { bundle, EFFICIENCY_QUESTIONS } from "../src/core/questions.js";
 
 const t = thresholds({});
 const baseView = {
-  turn: 1, original_request: "로그인 버그만 고쳐. DB는 건드리지 마.", current_request: "로그인 버그만 고쳐. DB는 건드리지 마.", recent_instructions: [], recent: [],
+  turn: 1, original_request: "로그인 버그만 고쳐. DB는 건드리지 마.", recent_instructions: [], recent: [],
   calls_this_turn: 3, kinds_this_turn: { read: 2, search: 1, check: 0, edit: 0 },
   same_action_count_this_turn: 0, last_outcome_of_this_action: null, last_pass_seq: null, changed_since_last_pass: [], unknown_since_last_pass: false, validity: "none",
   jev_calls: 0, advisories_this_turn: 0, advisories_for_this_action_this_turn: 0, calls_since_last_advisory: Infinity,
@@ -73,9 +73,7 @@ test("scope advisory: expansion or a low in_scope, quoting the request", () => {
   assert.equal(decide(eff({ in_scope: { p: 0.1 }, scope_expansion: { p: 0.6 } }), view(), { kind: "edit" }, t).advisory.rule, "scope");
   assert.equal(decide(eff({ in_scope: { p: 0.1 }, scope_expansion: { p: 0.18 } }), view(), { kind: "edit" }, t).advisory, null, "the two signals disagree: not a scope case");
   assert.equal(decide(eff({ scope_expansion: { p: 0.84 }, in_scope: { p: 0.16 } }), view(), { kind: "edit" }, t).advisory, null);
-  assert.equal(decide(eff({ scope_expansion: { p: 0.97 } }), view({ original_request: null, current_request: null }), { kind: "edit" }, t).advisory, null, "no request, no scope judgment");
-  const moved = decide(eff({ scope_expansion: { p: 0.9 } }), view({ current_request: "now enable ALB access logs" }), { kind: "edit" }, t);
-  assert.match(moved.advisory.text, /«now enable ALB access logs»/, "the advisory quotes the current request, not the session's first one");
+  assert.equal(decide(eff({ scope_expansion: { p: 0.97 } }), view({ original_request: null }), { kind: "edit" }, t).advisory, null, "no request, no scope judgment");
 });
 
 test("redundant advisory only when the ledger says the last pass is still valid", () => {

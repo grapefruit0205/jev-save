@@ -2,11 +2,6 @@
 
 ## jev-save
 
-### Live validation round 1 (2026-09-21)
-- Orphaned ledger locks are reclaimed when provably dead — the owner's pid (now written into the lock) no longer exists, or the lock is older than 15 minutes, far past any hook's lifetime — instead of disabling the session for good. A lock whose owner may still be alive is still never stolen (the review's case is kept as a test). `doctor` and `stats` report held, orphaned and uncertain sessions.
-- Scope is judged against the user's most recent real instruction (`current_request`); the session's first prompt is background only. First wrong live advisory: a call 33 turns into a session was measured against the opening prompt while the user had long since moved on. Replayed with the real prompts, in_scope went from 0.06 to 0.91 and a genuinely off-request control still scored 0.87. Question bundle version 2.
-- `jev-save review`: every advisory that fired, its signals, what the agent did next, and whether it changed course. `jev-save label #n right|wrong|unsure "note"` records the human verdict; `stats` prints a per-rule scorecard from the labels.
-
 ### Runtime evidence fixes (2026-09-21)
 - Separate security coverage from efficiency heuristics: security `on`/`log` assesses all shell/MCP calls within explicit exclusions and the session budget. Narrowing `JEV_SAVE_JUDGE_KINDS` no longer narrows that coverage. Tighten cloud subcommand matching and classify shell substitutions, embedded programs and sort output writes conservatively.
 - Honor shadow and security `log`/`off` on both provider errors and hook exceptions, even with `JEV_SAVE_FAIL_CLOSED` set.

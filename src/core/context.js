@@ -59,9 +59,7 @@ export function buildState(action, cls, v, { home } = {}) {
   const context = {
     user_recent_messages: instructions,
     recent_tool_calls: v.recent.map(describe),
-    // the request to judge against, and the session's opening request only when it is a different, older one
-    current_request: v.current_request ?? undefined,
-    original_request: v.original_request && v.original_request !== v.current_request ? v.original_request : undefined,
+    original_request: v.original_request ?? undefined,
     recent_instructions: instructions,
     this_turn: { calls: v.calls_this_turn, reads: v.kinds_this_turn.read, searches: v.kinds_this_turn.search, checks: v.kinds_this_turn.check, edits: v.kinds_this_turn.edit },
     proposed_action_kind: cls.runner ? `${cls.kind} (${cls.runner})` : cls.kind,

@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { append, cwdIdOf, describe, lockReport, readEvents, replay, reserveCall, sessionPath, validityOf, view } from "../src/core/ledger.js";
+import { append, cwdIdOf, describe, readEvents, replay, reserveCall, sessionPath, validityOf, view } from "../src/core/ledger.js";
 
 const fresh = () => mkdtempSync(join(tmpdir(), "jev-save-ledger-"));
 const sid = "session-1";
@@ -127,8 +127,6 @@ test("view: counts for this turn, repeat count, last outcome, prompts, advisory 
   const v = view(state, { digest: "r1", cwdId: cwdIdOf("/repo") });
   assert.equal(v.turn, 2);
   assert.equal(v.original_request, "로그인 버그만 고쳐. DB는 건드리지 마.");
-  assert.equal(v.current_request, "계속해", "the most recent real instruction is what a call is judged against");
-  assert.equal(v.turns_since_current_request, 0);
   assert.deepEqual(v.recent_instructions, ["로그인 버그만 고쳐. DB는 건드리지 마.", "계속해"]);
   assert.equal(v.calls_this_turn, 3);
   assert.deepEqual(v.kinds_this_turn, { read: 2, search: 1, check: 0, edit: 0 });
@@ -157,8 +155,6 @@ test("synthetic prompts open a turn but never become the request", () => {
   v = view(replay(readEvents(sid, dir)), { digest: "d", cwdId: cwdIdOf("/repo") });
   assert.equal(v.turn, 3);
   assert.equal(v.original_request, "fix the login bug");
-  assert.equal(v.current_request, "fix the login bug");
-  assert.equal(v.turns_since_current_request, 1, "a synthetic prompt opened a turn after the last real one");
   assert.deepEqual(v.recent_instructions, ["fix the login bug"]);
 });
 
@@ -217,13 +213,12 @@ test("lock timeout never writes under another owner and marks evidence unknown, 
   scenario(dir, [{ prompt: "fix", turn: 1 }, { pre: "c1", id: "t1" }, { post: "t1" }]);
   const before = readFileSync(sessionPath(sid, dir), "utf8");
   mkdirSync(lock);
-  writeFileSync(join(lock, "pid"), String(process.pid));   // a live owner (this very process)
   const old = new Date(Date.now() - 60_000);
   utimesSync(lock, old, old);
   assert.equal(append(sid, { ev: "pre", tool_use_id: "lost-edit", kind: "edit" }, { dir }), false);
   assert.equal(readFileSync(sessionPath(sid, dir), "utf8"), before);
   assert.equal(existsSync(lock), true, "never steal a possibly live writer's lock");
-  rmSync(lock, { recursive: true, force: true });
+  rmdirSync(lock);
   const state = replay(readEvents(sid, dir));
   assert.equal(view(state, { digest: "c1", cwdId: cwdIdOf("/repo") }).validity, "unknown");
   assert.equal(reserveCall(sid, { dir }).why, "ledger", "do not spend calls on incomplete evidence");
@@ -285,35 +280,4 @@ test("concurrent writers through compaction lose nothing: every writer's survivi
   }
   assert.ok(survivors >= 100, "the kept window is there");
   assert.equal(existsSync(sessionPath(sid, dir) + ".lock"), false, "the lock is released");
-});
-
-test("an orphaned lock (owner pid gone, or far older than any hook) is reclaimed instead of killing the session", async () => {
-  const dir = fresh(), lock = sessionPath(sid, dir) + ".lock";
-  scenario(dir, [{ prompt: "fix", turn: 1 }]);
-  // 1. owner pid is dead: a child process takes the lock, writes its pid, and exits without releasing
-  await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["-e", `require("fs").mkdirSync(${JSON.stringify(lock)}); require("fs").writeFileSync(${JSON.stringify(join(lock, "pid"))}, String(process.pid));`], { stdio: "inherit" });
-    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child ${code}`))));
-  });
-  assert.equal(existsSync(lock), true);
-  assert.deepEqual(lockReport(dir).orphans, [lock]);
-  const t0 = Date.now();
-  assert.equal(append(sid, { ev: "pre", tool_use_id: "t1", kind: "edit" }, { dir }), true, "reclaimed and appended");
-  assert.ok(Date.now() - t0 < 400, "without waiting out the full lock timeout");
-  assert.equal(existsSync(lock), false, "released after use");
-  assert.equal(existsSync(sessionPath(sid, dir) + ".uncertain"), false, "no gap marker: the session stays alive");
-  assert.equal(reserveCall(sid, { dir }).ok, true);
-  // 2. a lock with no pid file but far older than any hook the host could still be running
-  mkdirSync(lock);
-  const ancient = new Date(Date.now() - 20 * 60_000);
-  utimesSync(lock, ancient, ancient);
-  assert.equal(append(sid, { ev: "pre", tool_use_id: "t2", kind: "edit" }, { dir }), true);
-  assert.equal(existsSync(lock), false);
-  // 3. a lock with no pid and a recent mtime is a live owner between mkdir and its pid write: wait, then give up
-  mkdirSync(lock);
-  const t1 = Date.now();
-  assert.equal(append(sid, { ev: "pre", tool_use_id: "t3", kind: "edit" }, { dir }), false);
-  assert.ok(Date.now() - t1 >= 450, "waited for the owner");
-  assert.equal(existsSync(lock), true, "not stolen");
-  rmSync(lock, { recursive: true, force: true });
 });
