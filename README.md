@@ -6,7 +6,7 @@
   <p><a href="README.ko.md">한국어</a> · Built on <a href="https://github.com/leepokai/jev-guard">leepokai/jev-guard</a></p>
 </div>
 
-> **Status: 0.1.0, shadow mode.** Everything runs end to end against the live Jev API; the advisory thresholds are experimental initial values that a week of shadow logs will re-set. Read [Limits](#limits) before trusting it with anything.
+> **Status: 0.1.0, measured and shelved for interactive use.** Two days of live use, four unattended runs on three projects and a 30-day replay of the author's transcripts are summarised in [What we found](#what-we-found). Short version: it works, it is honest, and in an interactive session with a strong model there is nothing for it to catch. Its place is unattended runs with a weaker model. Read that section before installing.
 
 ## What it does
 
@@ -35,6 +35,62 @@ Measured live on 2026-09-21 with `jev-1.13.0`, request *"fix the login bug only,
 | `rm -rf /` | | | 3.0 | deny |
 
 585–950 ms per judged call, about $0.00005 each.
+
+## What we found
+
+Everything below was measured, not guessed, over 2026-09-21/22. Details, tables and the raw numbers are in
+[docs/trial-2026-09-22.md](docs/trial-2026-09-22.md); the design decisions each measurement forced are in
+[docs/design.md](docs/design.md) and [CHANGELOG.md](CHANGELOG.md).
+
+**What it is for.** Three kinds of waste: an agent that *loops* (re-runs a check that already passed, retries a
+failing command without changing anything), an agent that *over-implements* (does work outside the request),
+and an agent that *over-designs* (builds more structure than the request needs).
+
+**What happened, in order.**
+
+1. *Interactive use, one day, Opus, the author watching.* 310 tool calls judged. The guard spoke 13 times and was
+   wrong 11 times (2 unlabelled). Every wrong line came from one cause: it measured the call against the wrong
+   text — the session's first prompt thirty turns later, a pasted document, an approval ("부탁할게") whose
+   content sat in the assistant's message. The events it exists to catch did not occur at all: the base rate of
+   "the same passing check re-run with nothing changed" in the author's month of transcripts was 16 runs, about
+   five minutes.
+2. *Unattended run, Terraform drift audit, a weaker model (DeepSeek Flash) as the actor.* 66 turns, 65 calls.
+   The agent ran `terraform plan` ten times; six of those could not produce anything new. The guard, as it then
+   stood, said nothing — every re-run wore a different pipe (`| tail`, `| grep`), so the ledger saw ten actions,
+   and Jev's `redundant` answer stayed at 0.07–0.18 even with the facts spelled out. Fixes that followed, each
+   checked offline against the recording before it was written: the action's identity is what a command
+   *produces* (pipes, echoes and redirects stripped); the repeat rules read the ledger only; Jev judges the one
+   thing the ledger cannot — whether the agent stated a reason to expect something new (0.85–0.90 when it had,
+   0.19–0.24 when it had not); denied calls are closed from the transcript instead of poisoning the evidence;
+   terraform and Python `unittest` outputs are parsed because `| tail` hides their exit status. Replayed: two
+   lines sent, both right; two lifted for a stated reason, both right; nothing else.
+3. *Unattended run, a planted one-line bug in a Python project.* 11 calls, fixed cleanly, 0 advisories, 0 events.
+4. *Unattended run, a small Go feature, twice.* 16 and 19 calls, both minimal and inside the rules, 0 advisories.
+   On every edit `in_scope` stayed at 0.83 or above, so the scope rule is nowhere near legitimate feature work.
+5. *Request tracking, validated on the interactive log.* Jev now says what each prompt *is* (task, approval,
+   pasted material, question, steer), and the ledger keeps the request current from that. Replayed on the three
+   sessions that produced the 11 labels (129 prompts, real inputs): the 9 wrong advisories go to 0, none of 26
+   in-scope controls turn wrong. Cost 0.7 s per prompt.
+6. *Over-design, base rate.* On 30 days of transcripts only 18% of file-changing turns go through Edit/Write (the
+   rest are shell and script edits, invisible to any size rule); among those, every small-request/large-output
+   case was legitimate. Not built.
+
+**Across the three projects:** 90 judged calls in unattended runs, 2 lines sent, both on real waste, 0 wrong
+lines, 0.6 s per judged call, 0 broken sessions.
+
+**The verdict, plainly.**
+
+| you are | install it? | why |
+| --- | --- | --- |
+| working interactively with a strong model, watching the screen | no | in 30 days of the author's sessions the events it catches did not happen; you pay 0.6 s per call and 0.7 s per prompt for silence, and you interrupt a loop faster than it can |
+| running unattended jobs (`claude -p`, `codex exec`, a scheduled task), especially with a weaker model | yes, `advise` + `security log` | that is where loops happen, where nobody is watching, and where the request is one fixed text; it spoke twice in 66 turns there and was right both times |
+| curious what your agent actually wastes | run `shadow` for a day and read `jev-save stats` | the ledger and the decision log are the useful artefact even when the advisories stay silent |
+
+What did not work, and was removed or never built: a `redundant` question to Jev (it does not confirm the
+ledger's facts), a `necessary` rule (never right anywhere), sending the whole conversation to Jev (right on
+intent, wrong on facts), using the current turn's prompt as the request (breaks on shorthand and pastes),
+a `known_information` question for the same facts through a different command (not separable), a size
+signal for over-design (no events, 82% of edits invisible).
 
 ## How it works
 
@@ -83,7 +139,7 @@ Suppression keeps it from nagging: the same finding on the same action once per 
 
 **Evidence stays conservative.** A later failure of the same action invalidates an earlier pass; a later unknown or unfinished run of it makes it uncertain; an unfinished change counts as a change, an unfinished read as nothing. A terraform run's verdict comes from its own summary lines, because `| tail` hides its exit status. Every ledger append and compaction uses the same lock. Compaction preserves the original request, total attempt count and sequence/turn numbering independently of the retained history. After a lock timeout or write failure, a `.jsonl.uncertain` marker makes validity unknown and disables new provider attempts for that session. Tools continue to run. Locks are never stolen based on age: after a crashed writer leaves an orphaned lock, start a new session; stop the host before manually cleaning up abandoned session files.
 
-**Shadow first, but not for long.** The shipped default records every judgment in `~/.jev-save/decisions.jsonl` and sends nothing to the agent. Advise mode logs exactly the same, so switching early costs little: a wrong efficiency advisory is one line the agent can ignore, and the log still says what fired and whether the agent changed course. What a shadow period buys is a clean baseline without advisories, which the fixture A/B can supply later. The one thing to decide before switching is the security gate: its `ask` becomes a real permission prompt (a `sed -i` edit scored risk 1.7 live), so a host that already runs its own permission classifier should set `jev-save security log`.
+**Shadow or advise.** The shipped default records every judgment in `~/.jev-save/decisions.jsonl` and sends nothing to the agent; `jev-save mode advise` sends the advisories. Both log the same, so the log is the artefact either way. For an unattended run the measured setting is `advise` with `security log`: the security gate's `ask` would otherwise become a real permission prompt (a `sed -i` edit scored risk 1.7 live, and every `git commit` the user asked for scored 2.0), and hosts already run their own permission layer. For the runner that produced the numbers in [What we found](#what-we-found) — a copy of the repo, `claude -p --permission-mode dontAsk` with an allowlist, the guard in `advise` — see [docs/trial-2026-09-22.md](docs/trial-2026-09-22.md).
 
 ## Install
 

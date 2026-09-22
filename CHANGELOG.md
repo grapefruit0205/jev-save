@@ -2,6 +2,9 @@
 
 ## jev-save
 
+### Shelved for interactive use; the README says what was found (2026-09-22)
+- The author uninstalled the Claude Code hooks from the interactive sessions. Two days of live use, four unattended runs on three projects and a 30-day transcript replay are summarised in the README's "What we found", with a plain verdict: nothing to catch in an interactive session with a strong model; its place is unattended runs with a weaker model, where it spoke twice in 66 turns and was right both times.
+
 ### The request is tracked, not fixed (2026-09-22)
 Every wrong scope advisory in the interactive log (9 of 9 labelled) came from measuring against the wrong text: a first prompt thirty turns old, a pasted document, a "부탁할게" whose content was in the assistant's message. Two earlier fixes (the current turn's prompt; the whole conversation) had failed on shorthand and on facts. This one asks Jev the thing it is good at — what a message *is* — and keeps the rest deterministic.
 - At UserPromptSubmit the guard asks Jev `message_kind` (task / approval / paste / question / steer) and `refers_to_previous`, with the assistant's previous message from the transcript, and records a `prompt_kind` event. Replay folds them into a request state (`ledger.requestAfter`): a task or a paste replaces the request (plus the assistant message it points at), an approval makes the proposal the request, a steer appends (last two), a question changes nothing. `view.original_request` is that request; older ledgers and outages fall back to the first real prompt. Snapshots carry it through compaction.
