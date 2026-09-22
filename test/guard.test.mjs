@@ -84,9 +84,11 @@ test("recordPrompt marks host-injected messages as synthetic", () => {
   const dir = fresh();
   recordPrompt(sid, "<bash-input>cd x && npm test</bash-input><bash-stdout>61 pass</bash-stdout>", { dir });
   recordPrompt(sid, "[Request interrupted by user]", { dir });
+  recordPrompt(sid, "<task-notification>\n<task-id>x</task-id>", { dir });
+  recordPrompt(sid, "<ci-monitor-event>\"Auto-fix pull requests\" is watching PR #1", { dir });
   recordPrompt(sid, "로그인 버그만 고쳐.", { dir });
   const st = replay(readEvents(sid, dir));
-  assert.deepEqual(st.prompts.map((p) => p.synthetic), [true, true, false]);
+  assert.deepEqual(st.prompts.map((p) => p.synthetic), [true, true, true, true, false]);
   assert.equal(view(st, { digest: "d", cwdId: cwdIdOf("/repo") }).original_request, "로그인 버그만 고쳐.");
 });
 

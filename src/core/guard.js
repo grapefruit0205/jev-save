@@ -66,7 +66,7 @@ export function shouldJudge(cls, v, s) {
 // Hosts also deliver things that are not the user speaking as prompts: the desktop app's terminal echo
 // (`<bash-input>`), slash-command echoes, injected context, interruption notices, session-resume banners.
 // They still start a turn, but they are not a request and must never become original_request.
-export const SYNTHETIC_PROMPT = /^\s*(?:<(?:bash-input|bash-stdout|bash-stderr|command-name|command-message|command-args|local-command-stdout|local-command-stderr|system-reminder|teammate-message|agent-message|task-notification|ide_selection|ide_opened_file)\b|\[Request interrupted|Caveat:|This session is being continued|Continue from where you left off|Please continue the conversation)/i;
+export const SYNTHETIC_PROMPT = /^\s*(?:<(?:bash-input|bash-stdout|bash-stderr|command-name|command-message|command-args|local-command-stdout|local-command-stderr|system-reminder|teammate-message|agent-message|task-notification|ci-monitor-event|ide_selection|ide_opened_file)\b|\[Request interrupted|Caveat:|This session is being continued|Continue from where you left off|Please continue the conversation)/i;
 
 /** @returns {{turn:number, synthetic:boolean}|false} */
 export function recordPrompt(sessionId, text, { dir = DEFAULT_DIR(), now = Date.now(), home = homedir() } = {}) {
