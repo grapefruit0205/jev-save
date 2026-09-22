@@ -2,7 +2,7 @@
   <img src="assets/icon.svg" width="96" alt="jev-save">
   <h1>jev-save</h1>
   <p><strong>A runtime efficiency guard for coding agents, powered by <a href="https://typesafe.ai/">Jev</a>.</strong></p>
-  <p>Before Claude Code or Codex runs a tool call, Jev is asked whether the call is still necessary, whether it repeats a result that is still valid, and whether it widens what the user asked for.</p>
+  <p>Before Claude Code or Codex runs a tool call, a session ledger says whether it repeats work already done, and Jev is asked whether it is still necessary, whether it widens what the user asked for, and — when it is a repeat — whether the agent gave a reason.</p>
   <p><a href="README.ko.md">한국어</a> · Built on <a href="https://github.com/leepokai/jev-guard">leepokai/jev-guard</a></p>
 </div>
 
@@ -41,10 +41,14 @@ Measured live on 2026-09-21 with `jev-1.13.0`, request *"fix the login bug only,
 ```
 user prompt ──► UserPromptSubmit hook ──► ledger: new turn, the request
 tool call   ──► PreToolUse hook ──────► classify ──► should Jev be asked? ──► one Jev request ──► policy ──► allow / advisory / ask / deny
-tool result ──► PostToolUse hook ─────► ledger: outcome (pass / fail / unknown), duration
+tool result ──► PostToolUse hook ─────► ledger: outcome (pass / fail / unknown), duration, output size
 ```
 
-**The ledger.** Every hook invocation is a separate process, so the session's memory is an append-only JSONL file per session under `~/.jev-save/sessions/`. It records each prompt, each proposed call (tool, kind, a redacted preview, paths) and each outcome, joined by the host's `tool_use_id`. A call whose result never arrived — the host was interrupted, a new prompt came first — is `unknown`, and `unknown` never counts as evidence. From this the guard derives, for the call in front of it: how many times the same action already ran this turn, what it returned last time, what changed since the last passing run, and whether that earlier pass is still *valid*, *stale* or *unknown*.
+**The ledger.** Every hook invocation is a separate process, so the session's memory is an append-only JSONL file per session under `~/.jev-save/sessions/`. It records each prompt, each proposed call (tool, kind, a redacted preview, paths) and each outcome, joined by the host's `tool_use_id`. A call whose result never arrived — the host was interrupted, a new prompt came first — is `unknown`, and `unknown` never counts as evidence. From this the guard derives, for the call in front of it: how many times the same action already ran this turn, what it returned last time and what that cost, what changed since the last passing run, whether that earlier pass is still *valid*, *stale* or *unknown*, and how many identical failures are stacked up with nothing changed between them.
+
+"The same action" is the *producer*, not the exact command: `terraform plan | tail -250` and `terraform plan | grep "No changes"` are one action seen through two pipes (consumers, label echoes and output redirects are stripped; flags, `cd`, environment assignments and heredoc bodies are kept). The exact input still keys the answer cache.
+
+On Claude Code the guard also reads the tail of the host's own transcript, for two things the hooks never deliver: the outcome of a call that fired no PostToolUse — a permission denial in `dontAsk` mode closes the entry as *never ran*, so it neither counts as a run nor as a change — and the agent's last words before the call, its stated reason.
 
 **Classification is deterministic and offline.** Before any model is involved, the command is split into segments (heredoc bodies removed, quotes respected) and classified by its first word: a test/build/lint runner is a `check` (the runner regex and 26 runner-output parsers are vendored from [jev-belay](https://github.com/valentynkit/jev-belay)); `sed -i`, redirects, `rm`, package installs and git operations that touch the tree are writes; scripts and anything unrecognised count as changes, on purpose. Claude Code does not report a command's exit code, so a check's pass/fail comes from the runner's own summary line in its output.
 
@@ -54,18 +58,27 @@ tool result ──► PostToolUse hook ─────► ledger: outcome (pass 
 | --- | --- | --- |
 | `in_scope` | yes/no | is this work that completing the request needs, including auxiliary work such as reading related code or adding a test for the change? |
 | `necessary` | yes/no | given what was already done and learned, does this call move the request forward now? |
-| `redundant` | yes/no | does it repeat an action whose result is still valid, with no new information expected? |
 | `scope_expansion` | yes/no | does it introduce a new abstraction, an unrelated refactor, a migration, an extra feature, or an edit in an area the user excluded? |
 | `kind` | choice | progress · verification · exploration · repetition · expansion |
+| `expects_new_information` | yes/no | only when the call repeats one that ran: does the agent's own last narration give a concrete reason to expect a different result — a suspected bad result, a changed input, a fix, another slice of a large output? |
 | `risk`, `approval`, `user_requested` | jev-guard's | how much harm could it do; would a careful engineer want a human to confirm; did the user ask for exactly this? |
 
-**Policy is code, and pure.** Security first: risk 2.5+ denies, risk 1.5+ asks, and the user's own explicit request lifts an ask (never a deny). Then at most one advisory, by priority: *scope* (expansion ≥ 0.85, or in_scope ≤ 0.15 with expansion ≥ 0.5 — the two signals must agree, and there must be a request to measure against), *redundant* (≥ 0.85, and only when the ledger says the last pass is still valid), *necessary* (≤ 0.20). Suppression keeps it from nagging: one advisory per action per turn, three per turn, never two calls in a row. If the model reads an advisory and does the same thing anyway, jev-save stays silent — that may be a legitimate insistence.
+There is no `redundant` question any more. With the ledger's own facts in view — same producer, last run passed, nothing changed — Jev still answered 0.07–0.18 on a headless trial's plan re-runs, so whether a call is a repeat is decided from the ledger; what Jev decides is the exception.
+
+**Policy is code, and pure.** Security first: risk 2.5+ denies, risk 1.5+ asks, and the user's own explicit request lifts an ask (never a deny). Then at most one advisory, by priority:
+
+- *scope* — expansion ≥ 0.85, or in_scope ≤ 0.15 with expansion ≥ 0.5 (the two signals must agree, and there must be a request to measure against), or in_scope ≤ 0.15 with approval ≥ 0.9: a forbidden action rather than an added one (a commit against "no commits" scores in_scope 0.04, approval 0.96, expansion 0.44).
+- *repeat-failure* — the ledger's fact: the same action already failed twice in a row with nothing changed in between. `#53 and #59 ran this and failed; nothing changed since. Fix the cause before running it again.`
+- *redundant* — the ledger's fact: the last run of this action passed, nothing changed since, and re-running costs something (≥ 5 s or ≥ 4 KB of output). `#11 ran this (14 s) and passed; nothing changed since. If you need another part of its output, save it once instead of re-running.` Lifted when `expects_new_information` ≥ 0.8: "the grep came back empty, let me see the whole output" is a reason; "let me pull the ALB attributes next" is not.
+- *necessary* — ≤ 0.20.
+
+Suppression keeps it from nagging: the same finding on the same action once per five calls, three advisories per twenty calls, never two calls in a row. If the model reads an advisory and does the same thing anyway, jev-save stays silent — that may be a legitimate insistence.
 
 **Security coverage is separate from efficiency classification.** With security `on` or `log`, every shell and MCP call is a judgment candidate, even if its name or command looks read-only. Shell classification is a heuristic, not a security boundary. Native read/search tools are judged when they repeat within a turn or the turn has already made 12 calls. With security `off`, shell and MCP calls also follow the selective efficiency rules. Explicit `JEV_SAVE_SKIP_TOOLS` exclusions and the session budget still apply.
 
 **Cost is bounded.** A session stops asking after 200 provider invocation attempts by default. Each attempt is reserved under the ledger lock before the provider runs, including attempts that fail; concurrent hooks share the limit. Cache hits do not consume attempts, and HTTP retries inside one provider invocation share its reservation. The cache key includes the whole state and question bundle. Errors normally let the call through and are logged. `JEV_SAVE_FAIL_CLOSED` can deny security-bearing calls only with mode `advise` and security `on`; shadow mode and security `log`/`off` never deny on an error.
 
-**Evidence stays conservative.** A later failure of the same action invalidates an earlier pass; a later unknown or unfinished run makes it uncertain. Every ledger append and compaction uses the same lock. Compaction preserves the original request, total attempt count and sequence/turn numbering independently of the retained history. After a lock timeout or write failure, a `.jsonl.uncertain` marker makes validity unknown and disables new provider attempts for that session. Tools continue to run. Locks are never stolen based on age: after a crashed writer leaves an orphaned lock, start a new session; stop the host before manually cleaning up abandoned session files.
+**Evidence stays conservative.** A later failure of the same action invalidates an earlier pass; a later unknown or unfinished run of it makes it uncertain; an unfinished change counts as a change, an unfinished read as nothing. A terraform run's verdict comes from its own summary lines, because `| tail` hides its exit status. Every ledger append and compaction uses the same lock. Compaction preserves the original request, total attempt count and sequence/turn numbering independently of the retained history. After a lock timeout or write failure, a `.jsonl.uncertain` marker makes validity unknown and disables new provider attempts for that session. Tools continue to run. Locks are never stolen based on age: after a crashed writer leaves an orphaned lock, start a new session; stop the host before manually cleaning up abandoned session files.
 
 **Shadow first, but not for long.** The shipped default records every judgment in `~/.jev-save/decisions.jsonl` and sends nothing to the agent. Advise mode logs exactly the same, so switching early costs little: a wrong efficiency advisory is one line the agent can ignore, and the log still says what fired and whether the agent changed course. What a shadow period buys is a clean baseline without advisories, which the fixture A/B can supply later. The one thing to decide before switching is the security gate: its `ask` becomes a real permission prompt (a `sed -i` edit scored risk 1.7 live), so a host that already runs its own permission classifier should set `jev-save security log`.
 

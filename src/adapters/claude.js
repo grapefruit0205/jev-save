@@ -1,13 +1,19 @@
 // Claude Code hook events ↔ the core. Input fields are the documented ones only
-// (docs/design.md §10, checked 2026-09-21): session_id, cwd, hook_event_name, tool_name, tool_input,
-// tool_use_id, tool_response, duration_ms, prompt, and for PostToolUseFailure error / is_interrupt.
+// (docs/design.md §10, checked 2026-09-22): session_id, transcript_path, cwd, hook_event_name, tool_name,
+// tool_input, tool_use_id, tool_response, duration_ms, prompt, and for PostToolUseFailure error / is_interrupt.
+// A permission denial fires no PostToolUse / PostToolUseFailure (PermissionDenied exists for auto mode only), which
+// is why the core reads the transcript for the outcome of calls it never heard the end of.
 import "../core/types.js";
 
 export const name = "claude";
 
 /** @returns {Action} */
 export function toAction(event) {
-  return { agent: "claude", tool: String(event.tool_name ?? ""), input: event.tool_input ?? {}, cwd: String(event.cwd ?? process.cwd()), sessionId: String(event.session_id ?? ""), toolUseId: event.tool_use_id ? String(event.tool_use_id) : undefined };
+  return {
+    agent: "claude", tool: String(event.tool_name ?? ""), input: event.tool_input ?? {}, cwd: String(event.cwd ?? process.cwd()), sessionId: String(event.session_id ?? ""),
+    toolUseId: event.tool_use_id ? String(event.tool_use_id) : undefined,
+    transcriptPath: typeof event.transcript_path === "string" && event.transcript_path ? event.transcript_path : undefined,
+  };
 }
 
 /** What recordResult needs, from a PostToolUse or PostToolUseFailure event. */

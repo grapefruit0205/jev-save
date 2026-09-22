@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assess, recordPrompt, recordResult, settings, shouldJudge } from "../src/core/guard.js";
+import { parseTail, readTail } from "../src/core/transcript.js";
 import { buildState, projectInput } from "../src/core/context.js";
 import { cwdIdOf, readEvents, replay, view } from "../src/core/ledger.js";
 import { cacheKey, canonical, lookup, store } from "../src/core/cache.js";
@@ -120,17 +121,18 @@ test("pipeline: a repeated read in the same turn is judged; in shadow mode the a
   const provider = mockProvider();   // a read that already passed with nothing changed is the redundant rule, which outranks necessary
   recordPrompt(sid, "fix the login bug", { dir });
   const input = { file_path: "src/auth.py" };
+  const body = "def login():\n    pass\n".repeat(300);   // re-reading it costs context: what makes a repeat worth a line
   await assess(act("Read", input, { id: "r1" }), { provider, dir, logPath, env: {} });
-  recordResult(sid, { toolUseId: "r1", tool: "Read", input }, { dir });
+  recordResult(sid, { toolUseId: "r1", tool: "Read", input, output: body }, { dir });
   const shadow = await assess(act("Read", input, { id: "r2" }), { provider, dir, logPath, env: {} });
   assert.equal(shadow.judged, true); assert.equal(shadow.advisory.rule, "redundant"); assert.equal(shadow.emit, null);
-  recordResult(sid, { toolUseId: "r2", tool: "Read", input }, { dir });
+  recordResult(sid, { toolUseId: "r2", tool: "Read", input, output: body }, { dir });
   const advise = await assess(act("Read", input, { id: "r3" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
   assert.equal(advise.emit.kind, "context");
-  assert.match(advise.emit.text, /#2 ran this and passed; nothing observed changed since/);   // the most recent pass (r2), not the first
-  recordResult(sid, { toolUseId: "r3", tool: "Read", input }, { dir });
+  assert.match(advise.emit.text, /#2 ran this and passed; nothing changed since/);   // the most recent pass (r2), not the first
+  recordResult(sid, { toolUseId: "r3", tool: "Read", input, output: body }, { dir });
   const again = await assess(act("Read", input, { id: "r4" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
-  assert.equal(again.emit, null, "once per action per turn");
+  assert.equal(again.emit, null, "a cooldown per action");
   assert.equal(again.advisory.suppressed, true);
   const log = logLines(logPath);
   assert.deepEqual(log.map((l) => l.emitted ?? null), [null, null, "context", null]);
@@ -164,10 +166,11 @@ test("pipeline: redundant check after a pass with no change is an advisory; afte
   recordPrompt(sid, "fix the login bug", { dir });
   const input = { command: "pytest tests/test_auth.py -q" };
   await assess(act("Bash", input, { id: "c1" }), { provider, dir, logPath, env: {} });
-  recordResult(sid, { toolUseId: "c1", tool: "Bash", input, output: "===== 5 passed in 0.3s =====" }, { dir });
-  const rep = await assess(act("Bash", input, { id: "c2" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
-  assert.equal(rep.advisory.rule, "redundant"); assert.match(rep.emit.text, /#1 ran this and passed/);
-  recordResult(sid, { toolUseId: "c2", tool: "Bash", input, output: "===== 5 passed in 0.3s =====" }, { dir });
+  recordResult(sid, { toolUseId: "c1", tool: "Bash", input, output: "===== 5 passed in 6.3s =====", durationMs: 6300 }, { dir });
+  const rep = await assess(act("Bash", { command: "pytest tests/test_auth.py -q 2>&1 | tail -3" }, { id: "c2" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
+  assert.equal(rep.advisory.rule, "redundant", "another pipe on the same producer is the same action");
+  assert.match(rep.emit.text, /#1 ran this \(6 s\) and passed; nothing changed since\. If you need another part of its output, save it once/);
+  recordResult(sid, { toolUseId: "c2", tool: "Bash", input, output: "===== 5 passed in 6.3s =====", durationMs: 6300 }, { dir });
   await assess(act("Edit", { file_path: "src/auth.py", old_string: "a", new_string: "b" }, { id: "e1" }), { provider, dir, logPath, env: {} });
   recordResult(sid, { toolUseId: "e1", tool: "Edit", input: { file_path: "src/auth.py" } }, { dir });
   const after = await assess(act("Bash", input, { id: "c3" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
@@ -182,7 +185,7 @@ test("a project under the home directory keeps its validity: redacted display pa
   recordPrompt(sid, "fix the login bug", { dir, home });
   const input = { command: "pytest tests/test_auth.py -q" };
   await assess(act("Bash", input, { id: "c1", cwd }), { provider, dir, logPath, env: {}, home });
-  recordResult(sid, { toolUseId: "c1", tool: "Bash", input, output: "===== 5 passed in 0.3s =====", hostSuccess: true }, { dir });
+  recordResult(sid, { toolUseId: "c1", tool: "Bash", input, output: "===== 5 passed in 6.3s =====", hostSuccess: true, durationMs: 6300 }, { dir });
   const entry = replay(readEvents(sid, dir)).entries[0];
   assert.equal(entry.cwd, "~/proj", "displayed redacted");
   assert.equal(entry.cwd_id, cwdIdOf(cwd), "compared by identity");
@@ -285,4 +288,83 @@ test("budget: past JEV_SAVE_MAX_CALLS nothing is judged; the cache answers an ex
   const capped = await assess(act("Edit", { file_path: "b.py", old_string: "a", new_string: "b" }, { id: "e3" }), { provider, dir, logPath, env: { JEV_SAVE_MAX_CALLS: "2" } });
   assert.equal(capped.decision, "SKIP"); assert.equal(calls, 2);
   assert.equal(logLines(logPath).at(-1).why, "budget");
+});
+
+// A Claude Code transcript: one JSON line per message, tool_use blocks in assistant lines, tool_result blocks in user lines.
+const transcriptLine = (type, content) => JSON.stringify({ type, message: { role: type, content } }) + "\n";
+const said = (text) => transcriptLine("assistant", [{ type: "text", text }]);
+const used = (id, command) => transcriptLine("assistant", [{ type: "tool_use", id, name: "Bash", input: { command } }]);
+const resulted = (id, content, is_error = false) => transcriptLine("user", [{ type: "tool_result", tool_use_id: id, content, is_error }]);
+const DENIAL = "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools";
+
+test("transcript: the tail parser finds the agent's last words and every tool_result, and knows a denial when it sees one", () => {
+  const text = said("Let me run the plan.") + used("t1", "terraform plan") + resulted("t1", "No changes.") + said("The grep came back empty, which is odd.") + used("t2", "terraform plan > out") + resulted("t2", DENIAL, true) + resulted("t3", [{ type: "text", text: "Error: boom" }], true) + "{not json";
+  const { narration, results } = parseTail(text);
+  assert.equal(narration, "The grep came back empty, which is odd.");
+  assert.deepEqual([...results.keys()], ["t1", "t2", "t3"]);
+  assert.deepEqual(results.get("t1"), { error: false, denied: false, output: "No changes." });
+  assert.equal(results.get("t2").denied, true);
+  assert.deepEqual(results.get("t3"), { error: true, denied: false, output: "Error: boom" });
+  assert.equal(readTail("/nonexistent/transcript.jsonl"), "");
+  const path = join(fresh(), "t.jsonl");
+  writeFileSync(path, "x".repeat(100) + "\n" + said("late words"));
+  assert.equal(parseTail(readTail(path, 120)).narration, "late words", "a tail cut mid-line starts at the next line");
+  assert.equal(parseTail(readTail(path, 60)).narration, null, "a tail too short for the last line finds nothing rather than a broken line");
+});
+
+test("pipeline: a denied call learned from the transcript is not a run, so the next real run of the action is judged against the last pass", async () => {
+  const dir = fresh(); const logPath = join(dir, "decisions.jsonl"); const transcriptPath = join(dir, "transcript.jsonl");
+  const provider = mockProvider();
+  recordPrompt(sid, "WEB 계층 드리프트 감사. apply 금지.", { dir });
+  const plan = "terraform plan -input=false -no-color -lock=false";
+  let transcript = said("Let me capture a plan.") + used("p1", `${plan} 2>&1 | tail -250`);
+  writeFileSync(transcriptPath, transcript);
+  await assess(act("Bash", { command: `${plan} 2>&1 | tail -250` }, { id: "p1", transcriptPath }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
+  recordResult(sid, { toolUseId: "p1", tool: "Bash", input: { command: `${plan} 2>&1 | tail -250` }, output: "No changes. Your infrastructure matches the configuration.", durationMs: 13800 }, { dir });
+  // the agent tries to save the output to a file; dontAsk denies it and no PostToolUse ever fires
+  transcript += resulted("p1", "No changes.") + said("The grep came back empty, which is odd. Let me capture the full plan output to a file.") + used("p2", `${plan} > .plan-audit.txt 2>&1`);
+  writeFileSync(transcriptPath, transcript);
+  const second = await assess(act("Bash", { command: `${plan} > .plan-audit.txt 2>&1` }, { id: "p2", transcriptPath }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
+  assert.equal(second.advisory.rule, "redundant"); assert.equal(second.advisory.suppressed, true, "'the grep came back empty' is a reason");
+  transcript += resulted("p2", DENIAL, true) + said("Let me pull ALB attributes next.") + used("p3", `${plan} 2>&1 | grep -nE "No changes|^Plan:"`);
+  writeFileSync(transcriptPath, transcript);
+  const third = await assess(act("Bash", { command: `${plan} 2>&1 | grep -nE "No changes|^Plan:"` }, { id: "p3", transcriptPath }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
+  const entries = replay(readEvents(sid, dir)).entries;
+  assert.equal(entries[1].exec, "blocked", "the denial closed p2 from the transcript");
+  assert.equal(third.advisory.rule, "redundant");
+  assert.equal(third.advisory.suppressed, false, "'pull ALB attributes' is no reason to re-run the plan");
+  assert.match(third.emit.text, /#1 ran this \(14 s\) and passed; nothing changed since\. If you need another part of its output, save it once/);
+  assert.equal(third.signals.expects_new_information, 0.1, "the stated-reason question was asked, because the action had run before");
+  assert.equal(logLines(logPath).at(-1).view.reason, true);
+});
+
+test("pipeline: a stated reason lifts the redundant advisory; a third identical failure is called whatever was said", async () => {
+  const dir = fresh(); const logPath = join(dir, "decisions.jsonl"); const transcriptPath = join(dir, "transcript.jsonl");
+  const provider = mockProvider();
+  recordPrompt(sid, "WEB 계층 드리프트 감사. apply 금지.", { dir });
+  const plan = "terraform plan -input=false -no-color -lock=false";
+  const run = async (id, pipe, narration, { output, durationMs = 14000, failed = false } = {}) => {
+    writeFileSync(transcriptPath, said(narration) + used(id, `${plan} ${pipe}`));
+    const r = await assess(act("Bash", { command: `${plan} ${pipe}` }, { id, transcriptPath }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise" } });
+    if (output !== undefined) recordResult(sid, { toolUseId: id, tool: "Bash", input: { command: `${plan} ${pipe}` }, output, durationMs, failed, hostSuccess: !failed }, { dir });
+    return r;
+  };
+  await run("p1", "| tail -250", "Now let me capture a plan.", { output: "No changes. Your infrastructure matches the configuration." });
+  const odd = await run("p2", "| tail -8", "The grep came back empty, which is odd. Let me capture the full plan output and inspect it directly.", { output: "No changes. Your infrastructure matches the configuration." });
+  assert.equal(odd.advisory.rule, "redundant");
+  assert.equal(odd.advisory.suppressed, true);
+  assert.match(odd.advisory.why, /stated a reason/);
+  assert.equal(odd.emit, null);
+  const silent = await run("p3", "| grep -n Plan", "Let me look at the tags next.", { output: "No changes. Your infrastructure matches the configuration." });
+  assert.equal(silent.emit?.kind, "context");
+  // credentials expire: terraform fails behind `| tail`, which the parser sees where the exit status could not
+  const failing = "Planning failed. Terraform encountered an error while generating this plan.\n\nError: Retrieving AWS account details: ExpiredToken\n\n  on providers.tf line 1, in provider \"aws\":";
+  await run("p4", "| tail -15", "Credentials have expired. Let me try refreshing them.", { output: failing });
+  assert.equal(replay(readEvents(sid, dir)).entries[3].result, "fail");
+  const second = await run("p5", "| tail -20", "The default profile has valid credentials. Let me run plan using the profile.", { output: failing });
+  assert.notEqual(second.advisory?.rule, "repeat-failure", "one retry is normal");
+  const third = await run("p6", "| tail -12", "Now let me re-attempt the plan (env credentials may have refreshed).", { output: failing });
+  assert.equal(third.advisory.rule, "repeat-failure");
+  assert.equal(third.advisory.suppressed, false);
+  assert.equal(third.emit.text, "jev-save: #4 and #5 ran this and failed; nothing changed since. Fix the cause before running it again.");
 });

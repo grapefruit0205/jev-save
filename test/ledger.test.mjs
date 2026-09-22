@@ -16,8 +16,8 @@ function scenario(dir, steps) {
   for (const s of steps) {
     t += 1000;
     if (s.prompt) append(sid, { ev: "prompt", turn: s.turn, text: s.prompt, digest: "p" + s.turn }, { dir, now: t });
-    else if (s.pre) append(sid, { ev: "pre", turn: s.turn ?? 1, tool_use_id: s.id, tool: s.tool ?? "Bash", kind: s.kind ?? "check", digest: s.pre, preview: s.preview ?? s.pre, paths: s.paths ?? [], cwd: s.cwd ?? "/repo", cwd_id: cwdIdOf(s.cwd ?? "/repo"), decision: s.decision ?? "ALLOW", judged: s.judged ?? false, advised: s.advised ?? false, exec: s.exec ?? "running" }, { dir, now: t });
-    else if (s.post) append(sid, { ev: "post", tool_use_id: s.post, exec: s.exec ?? "completed", result: s.result ?? "pass", duration_ms: s.duration_ms }, { dir, now: t });
+    else if (s.pre) append(sid, { ev: "pre", turn: s.turn ?? 1, tool_use_id: s.id, tool: s.tool ?? "Bash", kind: s.kind ?? "check", digest: s.pre, ...(s.action ? { action: s.action } : {}), preview: s.preview ?? s.pre, paths: s.paths ?? [], cwd: s.cwd ?? "/repo", cwd_id: cwdIdOf(s.cwd ?? "/repo"), decision: s.decision ?? "ALLOW", judged: s.judged ?? false, advised: s.advised ?? false, exec: s.exec ?? "running" }, { dir, now: t });
+    else if (s.post) append(sid, { ev: "post", tool_use_id: s.post, exec: s.exec ?? "completed", result: s.result ?? "pass", duration_ms: s.duration_ms, output_chars: s.output_chars }, { dir, now: t });
   }
   return t;
 }
@@ -97,7 +97,7 @@ test("validity: valid only when nothing observed changed and nothing is unknown 
   assert.equal(validityOf(later.entries, "c1", cwdIdOf("/repo")).validity, "stale");   // an unclassified command counts as a change even before it ends
 });
 
-test("a blocked repeat does not count as a change; an unknown completion makes validity unknown", () => {
+test("a blocked repeat does not count as a change; an unfinished change is a change, an unfinished read is nothing", () => {
   const dir = fresh();
   scenario(dir, [
     { prompt: "a", turn: 1 },
@@ -108,8 +108,78 @@ test("a blocked repeat does not count as a change; an unknown completion makes v
   const { entries } = replay(readEvents(sid, dir));
   const v = validityOf(entries, "c1", cwdIdOf("/repo"));
   assert.equal(v.validity, "valid");   // a read with an unreadable result is not an unknown *execution*
-  scenario(dir, [{ pre: "r2", id: "t4", kind: "read" }, { prompt: "b", turn: 2 }]);   // t4 never completes → unknown exec
-  assert.equal(validityOf(replay(readEvents(sid, dir)).entries, "c1", cwdIdOf("/repo")).validity, "unknown");
+  scenario(dir, [{ pre: "r2", id: "t4", kind: "read" }, { prompt: "b", turn: 2 }]);   // t4 never completes → unknown exec, but a read changes nothing
+  assert.equal(validityOf(replay(readEvents(sid, dir)).entries, "c1", cwdIdOf("/repo")).validity, "valid");
+  scenario(dir, [{ pre: "w1", id: "t5", kind: "write-bash", turn: 2 }, { prompt: "c", turn: 3 }]);   // t5 never completes: it may have changed the tree
+  assert.equal(validityOf(replay(readEvents(sid, dir)).entries, "c1", cwdIdOf("/repo")).validity, "stale");
+});
+
+test("a denial learned from the transcript closes the entry as blocked: not a run, not a change", () => {
+  const dir = fresh();
+  scenario(dir, [
+    { prompt: "a", turn: 1 },
+    { pre: "c1", id: "t1", action: "plan" }, { post: "t1", duration_ms: 14000, output_chars: 9000 },
+    { pre: "c2", id: "t2", action: "plan", kind: "write-bash", preview: "terraform plan > out.txt" }, { post: "t2", exec: "denied", result: "unknown" },
+  ]);
+  const state = replay(readEvents(sid, dir));
+  assert.equal(state.entries[1].exec, "blocked");
+  const v = view(state, { digest: "c3", action: "plan", cwdId: cwdIdOf("/repo") });
+  assert.equal(v.validity, "valid", "the denied write never ran");
+  assert.equal(v.last_outcome_of_this_action, "pass", "the last *run* is t1, not the denial");
+  assert.equal(v.last_run_same_input, false);
+  assert.equal(v.last_duration_ms, 14000);
+  assert.equal(v.last_output_chars, 9000);
+  assert.equal(v.same_action_count_this_turn, 2, "the repeat count still sees every attempt");
+});
+
+test("the view is keyed on the action identity, and failed_runs lists identical failures with nothing changed since", () => {
+  const dir = fresh();
+  scenario(dir, [
+    { prompt: "audit", turn: 1 },
+    { pre: "p-tail", id: "t1", action: "plan" }, { post: "t1", duration_ms: 13000 },
+    { pre: "r1", id: "t2", kind: "read", tool: "Read", preview: "a.tf" }, { post: "t2" },
+    { pre: "p-grep", id: "t3", action: "plan" }, { post: "t3", duration_ms: 14000 },
+  ]);
+  let v = view(replay(readEvents(sid, dir)), { digest: "p-tail-8", action: "plan", cwdId: cwdIdOf("/repo") });
+  assert.equal(v.same_action_count_this_turn, 2);
+  assert.equal(v.last_pass_seq, 3, "the most recent pass of the producer, whatever pipe it wore");
+  assert.equal(v.validity, "valid");
+  assert.deepEqual(v.failed_runs, []);
+  // credentials expire: the same producer fails, and fails again; a read in between changes nothing
+  scenario(dir, [
+    { pre: "p-15", id: "t4", action: "plan" }, { post: "t4", result: "fail" },
+    { pre: "r2", id: "t5", kind: "read", tool: "Read", preview: "b.tf" }, { post: "t5" },
+    { pre: "p-20", id: "t6", action: "plan" }, { post: "t6", result: "fail" },
+  ]);
+  v = view(replay(readEvents(sid, dir)), { digest: "p-12", action: "plan", cwdId: cwdIdOf("/repo") });
+  assert.deepEqual(v.failed_runs, [4, 6]);
+  assert.equal(v.last_outcome_of_this_action, "fail");
+  assert.equal(v.validity, "stale");
+  // an edit after the failures is a possible fix: the streak is over
+  scenario(dir, [{ pre: "e1", id: "t7", kind: "edit", tool: "Edit", preview: "providers.tf", paths: ["providers.tf"] }, { post: "t7" }]);
+  v = view(replay(readEvents(sid, dir)), { digest: "p-12", action: "plan", cwdId: cwdIdOf("/repo") });
+  assert.deepEqual(v.failed_runs, []);
+  // a denied attempt in the streak is not a run and does not break it
+  scenario(dir, [
+    { pre: "p-a", id: "t8", action: "plan" }, { post: "t8", result: "fail" },
+    { pre: "p-b", id: "t9", action: "plan", kind: "write-bash" }, { post: "t9", exec: "denied", result: "unknown" },
+    { pre: "p-c", id: "t10", action: "plan" }, { post: "t10", result: "fail" },
+  ]);
+  v = view(replay(readEvents(sid, dir)), { digest: "p-12", action: "plan", cwdId: cwdIdOf("/repo") });
+  assert.deepEqual(v.failed_runs, [8, 10]);
+});
+
+test("advisory bookkeeping counts over a window of entries and per action, so a hundred-call headless turn is not one budget", () => {
+  const dir = fresh();
+  const steps = [{ prompt: "go", turn: 1 }];
+  for (let i = 1; i <= 30; i++) steps.push({ pre: `r${i}`, id: `t${i}`, kind: "read", tool: "Read", action: i % 10 === 0 ? "plan" : `r${i}`, advised: i === 5 || i === 10 }, { post: `t${i}` });
+  scenario(dir, steps);
+  const v = view(replay(readEvents(sid, dir)), { digest: "x", action: "plan", cwdId: cwdIdOf("/repo") });
+  assert.equal(v.advisories_this_turn, 2);
+  assert.equal(v.advisories_in_window, 0, "both advisories are older than the last 20 entries");
+  assert.deepEqual(v.advised_for_this_action, [{ rule: "advisory", calls_since: 20 }], "entry 10 was the last advisory on this action; 20 calls since");
+  assert.equal(v.calls_since_last_advisory, 20);
+  assert.deepEqual(view(replay(readEvents(sid, dir)), { digest: "x", action: "other", cwdId: cwdIdOf("/repo") }).advised_for_this_action, []);
 });
 
 test("view: counts for this turn, repeat count, last outcome, prompts, advisory bookkeeping", () => {

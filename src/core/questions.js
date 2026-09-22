@@ -3,7 +3,10 @@
 // comparable). The security questions are jev-guard's, unchanged.
 import { ACTION_QUESTIONS } from "../guard.js";
 
-export const BUNDLE_VERSION = 1;
+// v2 (2026-09-22): `redundant` dropped — with the ledger's own facts in view (same producer, last run passed,
+// nothing changed) Jev still answered 0.07–0.18 on the headless trial's plan re-runs, so the repeat rules read
+// the ledger directly; `expects_new_information` added, asked only when the call repeats one that ran.
+export const BUNDLE_VERSION = 2;
 
 export const EFFICIENCY_QUESTIONS = {
   in_scope: {
@@ -26,16 +29,6 @@ export const EFFICIENCY_QUESTIONS = {
     criteria: {
       true: "Yes: the call produces information or a change the request still needs.",
       false: "No: the agent already has what this call would give, or the call does not advance the request.",
-    },
-  },
-  redundant: {
-    type: "noul",
-    instructions:
-      "context.same_action_count_this_turn, context.last_outcome_of_this_action, context.changed_since_last_pass and context.validity describe earlier runs of this exact call in this session. " +
-      "Does this call repeat an action whose result is still valid — same command, last outcome pass, nothing observed changed since — with no stated expectation of new information?",
-    criteria: {
-      true: "Yes: it repeats a still-valid result and nothing suggests the outcome could differ.",
-      false: "No: it is the first run, something changed since the last pass, the last outcome was not a pass, or new information is plausibly expected.",
     },
   },
   scope_expansion: {
@@ -62,15 +55,35 @@ export const EFFICIENCY_QUESTIONS = {
   },
 };
 
+/**
+ * Asked only when the call repeats one that already ran and the agent said something first. The ledger knows the
+ * repeat is a repeat; what it cannot know is whether the agent has a reason — "the grep came back empty, let me
+ * see the whole output", "credentials were refreshed" — and a stated reason is what turns a redundant re-run into
+ * a deliberate one (trial 2026-09-22: 0.90 / 0.90 / 0.85 on the three re-runs with a reason, 0.19 / 0.23 without).
+ */
+export const REASON_QUESTION = {
+  expects_new_information: {
+    type: "noul",
+    instructions:
+      "context.agent_stated_reason is the agent's own most recent narration before this call. context.same_action_count_this_turn and context.last_outcome_of_this_action say this call repeats an earlier one. " +
+      "Does the narration give a concrete reason to expect a different result this time — a suspected wrong or incomplete earlier result, an input or credential that changed, a fix applied since, or a different slice of a large output the agent has not seen?",
+    criteria: {
+      true: "Yes: a concrete, stated reason to run it again.",
+      false: "No: no reason is stated, or the stated plan does not involve this call producing new information.",
+    },
+  },
+};
+
 export const SECURITY_QUESTIONS = ACTION_QUESTIONS;
 
 /**
  * One bundle per call. `security` adds jev-guard's four questions; `untrusted` keeps `from_untrusted`
  * only when the session actually tracks flagged content (it does not in the MVP, so the question
- * would be asked against an empty list and is dropped).
+ * would be asked against an empty list and is dropped); `reason` adds the stated-reason question.
  */
-export function bundle({ security = true, untrusted = false } = {}) {
+export function bundle({ security = true, untrusted = false, reason = false } = {}) {
   const q = { ...EFFICIENCY_QUESTIONS };
+  if (reason) Object.assign(q, REASON_QUESTION);
   if (security) {
     for (const [id, question] of Object.entries(SECURITY_QUESTIONS)) if (id !== "from_untrusted" || untrusted) q[id] = question;
   }

@@ -27,6 +27,9 @@ const LOCK_WAIT_MS = 500;
 const LOCK_ORPHAN_MS = 15 * 60_000;
 const UNKNOWN_AFTER_MS = 10 * 60_000;
 const CHANGE_KINDS = new Set(["edit", "write-bash", "other"]);
+// Advisory budgets used to be per turn; a headless run is one turn of a hundred calls, so the budget is now
+// counted over the last ADVISORY_WINDOW entries (a turn of fewer calls behaves as before).
+const ADVISORY_WINDOW = 20;
 const CLIP_PROMPT = 1500;
 const CLIP_INSTRUCTION = 300;
 
@@ -202,10 +205,10 @@ export function replay(events, { now = Date.now() } = {}) {
     } else if (e.ev === "pre") {
       const entry = {
         seq: ++seq, turn, tool_use_id: String(e.tool_use_id ?? `seq-${seq}`), tool: String(e.tool ?? ""), kind: e.kind ?? "other",
-        runner: e.runner, digest: String(e.digest ?? ""), preview: String(e.preview ?? ""), paths: Array.isArray(e.paths) ? e.paths : [], cwd: String(e.cwd ?? ""), cwd_id: String(e.cwd_id ?? ""),
-        decision: e.decision ?? "SKIP", judged: Boolean(e.judged), advised: Boolean(e.advised),
+        runner: e.runner, digest: String(e.digest ?? ""), action: String(e.action ?? e.digest ?? ""), preview: String(e.preview ?? ""), paths: Array.isArray(e.paths) ? e.paths : [], cwd: String(e.cwd ?? ""), cwd_id: String(e.cwd_id ?? ""),
+        decision: e.decision ?? "SKIP", judged: Boolean(e.judged), advised: e.advised ? (typeof e.advised === "string" ? e.advised : "advisory") : false,   // the rule that was sent, or false
         exec: e.exec === "blocked" ? "blocked" : "running", result: null,
-        started_at: e.at ?? 0, ended_at: null, duration_ms: null,
+        started_at: e.at ?? 0, ended_at: null, duration_ms: null, output_chars: null,
       };
       entries.push(entry);
       if (e.judged && !e.attempt_recorded && !e.cached) attempts++; // pre-reservation ledgers
@@ -213,10 +216,13 @@ export function replay(events, { now = Date.now() } = {}) {
     } else if (e.ev === "post") {
       const entry = byId.get(String(e.tool_use_id ?? ""));
       if (!entry || entry.exec !== "running") continue;
-      entry.exec = e.exec === "failed" ? "failed" : "completed";
+      // `denied`: the host refused the call before it ran (learned from the transcript, since a denial fires no
+      // PostToolUse) — the same as a call the guard blocked: it changed nothing and is not a run of the action.
+      entry.exec = e.exec === "denied" ? "blocked" : e.exec === "failed" ? "failed" : "completed";
       entry.result = e.result === "pass" || e.result === "fail" ? e.result : "unknown";
       entry.ended_at = e.at ?? null;
       entry.duration_ms = typeof e.duration_ms === "number" ? e.duration_ms : entry.ended_at != null ? Math.max(0, entry.ended_at - entry.started_at) : null;
+      entry.output_chars = typeof e.output_chars === "number" ? e.output_chars : null;
       byId.delete(entry.tool_use_id);
     }
   }
@@ -232,31 +238,48 @@ export function replay(events, { now = Date.now() } = {}) {
  * git fingerprint (deferred with enforcement), which is why this can only ever be an upper bound.
  * @returns {{validity:'valid'|'stale'|'unknown'|'none', lastPassSeq:number|null, changed:string[], unknown:boolean}}
  */
-export function validityOf(entries, digest, cwdId) {
+export function validityOf(entries, action, cwdId) {
   let last = null;
-  for (const e of entries) if (e.digest === digest && e.exec === "completed" && e.result === "pass") last = e;
+  for (const e of entries) if (keyOf(e) === action && e.exec === "completed" && e.result === "pass") last = e;
   if (!last) return { validity: "none", lastPassSeq: null, changed: [], unknown: false };
   const after = entries.filter((e) => e.seq > last.seq);
+  // a change that never reported back still counts as a change (stale); an unfinished read or search changes nothing
   const changed = after.filter((e) => CHANGE_KINDS.has(e.kind) && e.exec !== "blocked").map((e) => e.paths[0] ?? e.preview);
-  const subsequent = after.filter((e) => e.digest === digest && e.exec !== "blocked");
+  const subsequent = after.filter((e) => keyOf(e) === action && e.exec !== "blocked");
   const failed = subsequent.some((e) => e.result === "fail" || e.exec === "failed");
-  const unknown = after.some((e) => e.exec === "unknown") || subsequent.some((e) => e.result !== "pass")
-    || (Boolean(cwdId) && cwdId !== last.cwd_id);
+  const unknown = subsequent.some((e) => e.result !== "pass") || (Boolean(cwdId) && cwdId !== last.cwd_id);
   const validity = changed.length || failed ? "stale" : unknown ? "unknown" : "valid";
   return { validity, lastPassSeq: last.seq, changed, unknown };
 }
 
+/** The identity every "same action" question compares: the producer digest, or the exact-input digest for entries
+ *  written before it existed (and for hand-built ones). */
+const keyOf = (e) => e.action ?? e.digest;
+
+/** Seqs of the trailing runs of `action` that failed, newest last, stopping at a run that passed or at any
+ *  change to the tree: the failures a fix would have interrupted. Blocked runs are not runs. */
+export function trailingFailures(entries, action) {
+  const seqs = [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (CHANGE_KINDS.has(e.kind) && e.exec !== "blocked" && keyOf(e) !== action) break;
+    if (keyOf(e) !== action || e.exec === "blocked" || e.exec === "running") continue;
+    if (e.exec === "failed" || e.result === "fail") seqs.unshift(e.seq); else break;
+  }
+  return seqs;
+}
+
 /**
  * Everything policy and context need about the session at the moment of `action` (already classified:
- * `digest`, `kind`, `cwd`). Does not mutate anything.
+ * `digest` for the exact input, `action` for the producer identity, `kind`, `cwd`). Does not mutate anything.
  * @returns {View}
  */
-export function view(state, { digest, cwdId } = {}) {
+export function view(state, { digest, action = digest, cwdId } = {}) {
   const { turn, prompts, entries } = state;
   const thisTurn = entries.filter((e) => e.turn === turn);
-  const same = thisTurn.filter((e) => e.digest === digest);
-  const lastOfAction = [...entries].reverse().find((e) => e.digest === digest && (e.exec === "completed" || e.exec === "failed" || e.exec === "unknown"));
-  const v = validityOf(entries, digest, cwdId);
+  const same = thisTurn.filter((e) => keyOf(e) === action);
+  const lastOfAction = [...entries].reverse().find((e) => keyOf(e) === action && (e.exec === "completed" || e.exec === "failed" || e.exec === "unknown"));
+  const v = validityOf(entries, action, cwdId);
   const kinds = { read: 0, search: 0, check: 0, edit: 0 };
   for (const e of thisTurn) if (e.kind in kinds) kinds[e.kind]++; else if (e.kind === "write-bash") kinds.edit++;
   const advisedIdx = thisTurn.map((e, i) => (e.advised ? i : -1)).filter((i) => i >= 0);
@@ -270,13 +293,19 @@ export function view(state, { digest, cwdId } = {}) {
     kinds_this_turn: kinds,
     same_action_count_this_turn: same.length,
     last_outcome_of_this_action: lastOfAction?.result ?? null,
+    last_run_same_input: lastOfAction ? lastOfAction.digest === digest : null,
+    last_duration_ms: lastOfAction?.duration_ms ?? null,
+    last_output_chars: lastOfAction?.output_chars ?? null,
+    failed_runs: trailingFailures(entries, action),
     last_pass_seq: v.lastPassSeq,
     changed_since_last_pass: v.changed,
     unknown_since_last_pass: v.unknown,
     validity: state.coverageUnknown ? "unknown" : v.validity,
     jev_calls: state.attempts ?? entries.filter((e) => e.judged).length,
     advisories_this_turn: advisedIdx.length,
+    advisories_in_window: entries.slice(-ADVISORY_WINDOW).filter((e) => e.advised).length,
     advisories_for_this_action_this_turn: same.filter((e) => e.advised).length,
+    advised_for_this_action: thisTurn.map((e, i) => (e.advised && keyOf(e) === action ? { rule: e.advised, calls_since: thisTurn.length - 1 - i } : null)).filter(Boolean),
     calls_since_last_advisory: advisedIdx.length ? thisTurn.length - 1 - advisedIdx[advisedIdx.length - 1] : Infinity,
   };
 }

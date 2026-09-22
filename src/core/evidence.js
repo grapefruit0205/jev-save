@@ -130,6 +130,12 @@ export function checkSummary(output) {
   if (playwrightFail || /^\s+\d+ passed \([\d.]+m?s\)\s*$/m.test(tail)) return playwrightFail ? "fail" : "pass";
   if (/^error\[E\d+\]: /m.test(tail) || /^error: could not compile /m.test(tail)) return "fail";
   if (/^\S+\.go:\d+:\d+: /m.test(tail)) return "fail";
+  // Python unittest: "Ran 8 tests in 5.3s" then "OK", "OK (skipped=2)" or "FAILED (failures=4, errors=1)"
+  if (/^Ran \d+ tests? in [\d.]+s$/m.test(tail)) { if (/^FAILED \(/m.test(tail)) return "fail"; if (/^OK(?: \([^)]*\))?$/m.test(tail)) return "pass"; }
+  // terraform (plan / validate / apply). Its exit status is masked by any `| tail` or `| grep`, so the summary
+  // lines are the only verdict: an `Error:` block that names a .tf location or a provider is a failure.
+  if (/^Planning failed\./m.test(tail) || (/^(?:│\s*)?Error: /m.test(tail) && /\bon \S+\.tf(?:\.json)? line \d+|\bwith (?:provider|module|data|resource)\b/.test(tail))) return "fail";
+  if (/^(?:No changes\. |Plan: \d+ to add, \d+ to change, \d+ to destroy\.|Apply complete! Resources: |Success! The configuration is valid\.|You can apply this plan to save these new output values)/m.test(tail)) return "pass";
   return undefined;
 }
 
@@ -187,7 +193,8 @@ const GIT_VCS_SUB = new Set(["commit", "add", "push", "notes", "rm", "mv"]);
 // `git branch -d`, `git tag -d`, `git stash pop|apply|drop`, `git worktree add|remove`, `git remote add|set-url` change state.
 const GIT_MUTATING_FLAGS = /^(?:branch\s+(?:-[dDmM]|--delete|--move)|tag\s+(?:-d|--delete)|stash\s+(?:pop|apply|drop|push|save|clear)|worktree\s+(?:add|remove|prune|move)|remote\s+(?:add|remove|rm|set-url|rename)|config\s+(?!--get|--list|-l\b)|fetch\s+.*--prune)/;
 
-/** Remove heredoc bodies so words inside a script never classify the command. */
+/** Replace heredoc bodies with a marker so words inside a script never classify the command. The marker carries
+ *  a hash of the body, so two different scripts stay two different actions for the producer identity below. */
 function stripHeredocs(command) {
   let out = "", i = 0, had = false;
   const lines = command.split("\n");
@@ -195,34 +202,41 @@ function stripHeredocs(command) {
     const m = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(lines[i]);
     if (!m) { out += lines[i] + "\n"; i++; continue; }
     had = true;
-    out += lines[i].slice(0, m.index) + " <<HEREDOC\n";
     const end = m[2];
-    i++;
-    while (i < lines.length && lines[i].replace(/^\t+/, "") !== end) i++;
-    i++;
+    const body = [];
+    let j = i + 1;
+    while (j < lines.length && lines[j].replace(/^\t+/, "") !== end) body.push(lines[j++]);
+    out += lines[i].slice(0, m.index) + ` <<HEREDOC:${createHash("sha1").update(body.join("\n")).digest("hex").slice(0, 8)}\n`;
+    i = j + 1;
   }
   return { text: out, hadHeredoc: had };
 }
 
-/** Split on &&, ||, ;, |, newline outside quotes. Good enough for classification, not a parser. */
-function splitSegments(text) {
+/**
+ * Split on &&, ||, ;, |, |&, & and newline outside quotes, remembering the operator that preceded each
+ * segment (`null` for the first). Good enough for classification and identity, not a parser.
+ * @returns {{op: null|';'|'&&'|'||'|'|', text: string}[]}
+ */
+function tokenize(text) {
   const segs = [];
-  let cur = "", q = null;
+  let cur = "", q = null, op = null;
+  const push = (next) => { if (cur.trim()) segs.push({ op, text: cur.trim() }); cur = ""; op = next; };
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (q) { cur += ch; if (ch === q && text[i - 1] !== "\\") q = null; continue; }
     if (ch === "'" || ch === '"') { q = ch; cur += ch; continue; }
-    if (ch === "\n" || ch === ";" || (ch === "&" && text[i + 1] === "&") || (ch === "|" && text[i + 1] === "|") || (ch === "|" && text[i + 1] !== "|")) {
-      if (ch === "&" || (ch === "|" && text[i + 1] === "|")) i++;
-      if (cur.trim()) segs.push(cur.trim());
-      cur = "";
-      continue;
-    }
+    if (ch === "\n" || ch === ";") { push(";"); continue; }
+    if (ch === "&" && text[i + 1] === "&") { push("&&"); i++; continue; }
+    if (ch === "&" && text[i - 1] !== ">" && text[i + 1] !== ">") { push(";"); continue; }   // `cmd &`: background, still a separate command
+    if (ch === "|" && text[i + 1] === "|") { push("||"); i++; continue; }
+    if (ch === "|") { push("|"); if (text[i + 1] === "&") i++; continue; }
     cur += ch;
   }
-  if (cur.trim()) segs.push(cur.trim());
+  push(null);
   return segs;
 }
+
+const splitSegments = (text) => tokenize(text).map((s) => s.text);
 
 /** First real word of a segment: env assignments, wrappers and paths stripped. */
 function headOf(segment) {
@@ -313,7 +327,9 @@ export function classifyAction(tool, input = {}, env = process.env) {
   if (name !== "bash" && name !== "shell") return { kind: "other" };   // Agent/Task, Workflow, unknown tools
   const command = typeof input?.command === "string" ? input.command : "";
   if (!command.trim()) return { kind: "other", command };
-  if (/\$\(|`/.test(command)) return { kind: "other", command }; // shell substitutions can execute writes
+  // shell substitutions can execute writes — but not inside single quotes, where `$(` and backticks are literal
+  // (a JMESPath `--query 'Tags[?Key==`Name`]'` is a read, not a script)
+  if (/\$\(|`/.test(command.replace(/'[^']*'/g, "''"))) return { kind: "other", command };
   const { text, hadHeredoc } = stripHeredocs(command);
   const kinds = splitSegments(text).map((s) => classifySegment(s, env));
   const has = (k) => kinds.some((c) => c.kind === k);
@@ -395,6 +411,40 @@ export function digestOf(tool, input = {}) {
   if (name === "bash" || name === "shell") identity = String(input?.command ?? "").trim();
   else identity = canonical(input ?? {});
   return createHash("sha256").update(`${name}\n${identity}`).digest("hex").slice(0, 16);
+}
+
+// Pipeline stages that only shape what a producer already emitted. `sed` counts unless it edits in place.
+const CONSUMER_HEAD = new Set(["tail", "head", "grep", "egrep", "fgrep", "sed", "awk", "sort", "uniq", "wc", "cut", "jq", "yq", "column", "tee", "tr", "nl", "less", "more", "cat", "base64", "xxd", "od", "rev", "tac", "paste", "fold", "fmt", "strings", "md5sum", "sha256sum", "sha1sum"]);
+const LABEL_HEAD = new Set(["echo", "printf", "true", ":"]);
+const OUTPUT_REDIRECT = /(?:^|\s)(?:\d|&)?>>?\s*(?:&\d|\S+)/g;
+
+/**
+ * What a shell command *produces*, ignoring how the agent looked at it: pipeline consumers (`| tail -20`,
+ * `| grep Plan`), label echoes and output redirects are dropped; `cd`, environment assignments, flags and
+ * heredoc bodies (hashed) stay. `terraform plan | tail -250` and `terraform plan | grep "No changes"` are the
+ * same producer: the second run re-does the same work to look at another slice of the same output, which is
+ * what the repeat rules are about. Falls back to the whole command when nothing else is left.
+ */
+export function producerIdentity(command) {
+  const kept = [];
+  for (const { op, text } of tokenize(stripHeredocs(String(command ?? "")).text)) {
+    const { head, rest } = headOf(text);
+    if (LABEL_HEAD.has(head)) continue;
+    if (op === "|" && CONSUMER_HEAD.has(head) && !(head === "sed" && /(^|\s)-[a-zA-Z]*i/.test(rest))) continue;
+    kept.push(text.replace(OUTPUT_REDIRECT, " ").replace(/\s+/g, " ").trim());
+  }
+  return kept.filter(Boolean).join(" ; ") || norm(command);
+}
+
+/**
+ * Identity of an action for the ledger's "same action" questions (same_action_count, last outcome, validity,
+ * repeat rules): the producer identity for shell commands, the whole input for every other tool. `digestOf`
+ * stays the exact-input identity the answer cache keys on.
+ */
+export function actionDigestOf(tool, input = {}) {
+  const name = String(tool ?? "").toLowerCase();
+  if (name !== "bash" && name !== "shell") return digestOf(tool, input);
+  return createHash("sha256").update(`${name}\n${producerIdentity(input?.command)}`).digest("hex").slice(0, 16);
 }
 
 /** Short, redacted, human-readable line for logs and Jev state. Never file contents. */

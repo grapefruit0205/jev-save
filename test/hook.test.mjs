@@ -58,12 +58,12 @@ test("handle: a whole turn through the hook, shadow then advise", async () => {
   assert.equal(await handle(pre("Edit", { file_path: "src/auth.py", old_string: "a", new_string: "b" }, "u2"), o()), null);
   assert.equal(await handle(post("Edit", { file_path: "src/auth.py" }, "u2", { filePath: "src/auth.py" }), o()), null);
   assert.equal(await handle(pre("Bash", { command: "pytest -q" }, "u3"), o()), null);
-  assert.equal(await handle(post("Bash", { command: "pytest -q" }, "u3", { stdout: "===== 3 passed in 0.1s =====", stderr: "", interrupted: false }), o()), null);
+  assert.equal(await handle(post("Bash", { command: "pytest -q" }, "u3", { stdout: "===== 3 passed in 6.1s =====", stderr: "", interrupted: false }, { duration_ms: 6100 }), o()), null);
   // the same check again: shadow logs the redundant advisory silently, advise emits it
   assert.equal(await handle(pre("Bash", { command: "pytest -q" }, "u4"), o()), null);
-  await handle(post("Bash", { command: "pytest -q" }, "u4", { stdout: "===== 3 passed in 0.1s =====" }), o());
+  await handle(post("Bash", { command: "pytest -q" }, "u4", { stdout: "===== 3 passed in 6.1s =====" }, { duration_ms: 6100 }), o());
   const out = await handle(pre("Bash", { command: "pytest -q" }, "u5"), o({ JEV_SAVE_MODE: "advise" }));
-  assert.match(out.hookSpecificOutput.additionalContext, /#4 ran this and passed/);
+  assert.match(out.hookSpecificOutput.additionalContext, /#4 ran this \(6 s\) and passed/);
   // unknown events and missing session ids are ignored
   assert.equal(await handle({ hook_event_name: "Stop", session_id: sid }, o()), null);
   assert.equal(await handle(pre("Edit", {}, "u9", { session_id: "" }), o()), null);

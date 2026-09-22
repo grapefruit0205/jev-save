@@ -1,3 +1,16 @@
+# jev-save 보정 2 (2026-09-22) — 반복은 원장이, 예외는 Jev가
+
+무인 실행 시험([trial-2026-09-22.md](trial-2026-09-22.md))에서 고친 것만 적는다. 아래 기록과 충돌하면 이 절이 우선한다.
+
+- **행동의 정체는 생산자다.** `evidence.actionDigestOf`: 파이프라인 소비자(`tail`, `grep`, `jq`, `sed -n` …), 라벨용 echo, 출력 리다이렉트를 버리고 플래그·`cd`·환경 변수 대입·heredoc 본문(해시)은 남긴 명령이 "같은 행동"의 키다. `terraform plan | tail -250`과 `terraform plan | grep Plan`은 한 행동이다. 정확한 입력의 `digestOf`는 답변 캐시 키로만 남는다. 원장 `pre`는 `action`을 기록하고, 없는 옛 원장은 `digest`로 대신한다.
+- **반복 규칙은 원장의 사실만 본다.** 같은 생산자, 직전 실행 통과, 그 뒤 변경 없음, 그리고 다시 돌리는 비용(5초 이상 또는 출력 4 KB 이상, `post`의 `duration_ms`·`output_chars`)이면 redundant. 같은 생산자가 연속 두 번 실패했고 사이에 변경이 없으면 repeat-failure. 둘 다 margin 1. 시험에서 원장 사실을 그대로 보여줘도 Jev의 redundant는 0.07~0.18이었으므로 `redundant` 질문은 묶음에서 뺐다(BUNDLE_VERSION 2).
+- **Jev는 예외를 판단한다.** `expects_new_information`: 이미 실행된 행동을 반복할 때만, 에이전트의 직전 서술(`transcript_path` 꼬리에서 읽어 가리고 400자로 자른 것)을 `agent_stated_reason`으로 넣고 "다른 결과를 기대할 구체적 이유를 말하는가"를 묻는다. 0.8 이상이면 redundant 권고를 거둔다. 세 번째 같은 실패는 무슨 말을 했든 낸다.
+- **트랜스크립트가 hook이 못 닫은 것을 닫는다.** 권한 거부는 PostToolUse를 띄우지 않는다(PermissionDenied는 auto 모드 전용). 거부된 호출이 `running`으로 남아 10분 뒤 `unknown`이 되고 validity를 망치던 것을, PreToolUse마다 트랜스크립트 꼬리(1 MB)의 tool_result로 `denied`(replay에서 blocked: 실행도 변경도 아님), `failed`, `completed`로 닫는다. 트랜스크립트에서 밖으로 나가는 것은 가려진 서술뿐이다.
+- **scope: 금지된 행동.** in_scope ≤ 0.15이고 approval ≥ 0.9이면 scope. "commit 금지"에 대한 commit이 in_scope 0.04, approval 0.96, expansion 0.44였다. 대화형 판단 354건 중 0건이 이 조건에 든다.
+- **억제는 긴 한 턴에 맞춘다.** 권고 예산은 턴이 아니라 최근 20호출 기준 3회, 같은 행동에 같은 종류의 권고는 5호출에 한 번(다른 종류는 새 발견).
+- **증거.** terraform의 판정은 자체 요약 줄(`Planning failed.`, `.tf` 위치가 있는 `Error:` → fail; `No changes.`, `Plan:`, `Success!` → pass)에서 얻는다. `| tail`이 종료 코드를 가리기 때문이다. 끝나지 않은 읽기는 validity를 unknown으로 만들지 않는다(끝나지 않은 변경은 여전히 변경). 작은따옴표 안의 백틱·`$(`는 치환이 아니다.
+- **안 만든 것.** 다른 명령으로 같은 정보를 다시 묻는 반복(`known_information`)은 Jev가 받는 120자 미리보기로는 갈리지 않았다(실제 1건 0.50, 대조군 0.14~0.44).
+
 # jev-save 구현 보정 (2026-09-21)
 
 아래 v0.3/v0.2 기록과 충돌하면 이 절과 README의 현재 동작 설명이 우선한다. 기존 모듈 구조는 유지한다.

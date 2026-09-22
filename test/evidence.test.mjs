@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { actionOutcome, checkSummary, classifyAction, digestOf, previewOf, redact, runnerKind } from "../src/core/evidence.js";
+import { actionDigestOf, actionOutcome, checkSummary, classifyAction, digestOf, previewOf, producerIdentity, redact, runnerKind } from "../src/core/evidence.js";
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), "runners");
 const fixtures = readdirSync(dir).filter((name) => name.endsWith(".txt")).sort();
@@ -121,6 +121,12 @@ test("scripts and unknown commands count as changes", () => {
   assert.equal(kind("S=/tmp/x; python3 \"$S/a.py\""), "other");
   assert.equal(kind("./scripts/deploy.sh"), "other");
   assert.equal(kind(""), "other");
+  // substitutions can run anything — outside single quotes
+  assert.equal(kind("echo $(rm -rf x)"), "other");
+  assert.equal(kind("echo `date`"), "other");
+  assert.equal(kind("echo \"$(date)\""), "other", "double quotes still expand");
+  assert.equal(kind("aws ec2 describe-instances --query 'Reservations[].Instances[].{Name:Tags[?Key==`Name`]|[0].Value}'"), "read", "a JMESPath backtick is a literal");
+  assert.equal(kind("grep -n '$(' src/"), "search");
 });
 
 test("host tools: edits, reads, neutral, external, subagents", () => {
@@ -165,4 +171,41 @@ test("digest covers the whole input: same action ⇔ same digest; inner whitespa
   assert.equal(digestOf("Read", { file_path: "/a" }), digestOf("Read", { file_path: "/a" }));
   assert.equal(previewOf("Bash", { command: "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz' https://x" }, 200, "/home/u"), "curl -H 'Authorization: <redacted> https://x");   // belay's rule eats the closing quote too
   assert.equal(redact("token=abc123 at /home/u/proj", "/home/u"), "token=<redacted> at ~/proj");
+});
+
+test("action identity is the producer: pipeline consumers, label echoes and output redirects do not make a new action", () => {
+  const plan = "terraform plan -input=false -no-color -lock=false";
+  const same = [`${plan} 2>&1 | tail -250`, `${plan} 2>&1 | grep -nE "No changes|^Plan:"`, `${plan} > /tmp/plan.txt 2>&1; echo "exit=$?"`, `echo "=== PLAN ===" && ${plan}`, `${plan} 2>&1 | grep -iE "plan" ; echo "exitcode=\${PIPESTATUS[0]}"`];
+  for (const c of same) assert.equal(producerIdentity(c), plan, c);
+  assert.equal(producerIdentity(`${plan} > /tmp/plan.txt 2>&1; wc -l /tmp/plan.txt`), `${plan} ; wc -l /tmp/plan.txt`, "a reader after `;` is a second producer: only pipeline stages are consumers");
+  const a = actionDigestOf("Bash", { command: same[0] });
+  for (const c of same) assert.equal(actionDigestOf("Bash", { command: c }), a);
+  assert.notEqual(digestOf("Bash", { command: same[0] }), digestOf("Bash", { command: same[1] }), "the exact-input digest still tells them apart (cache key)");
+  // what does change the action: flags, cwd, environment, a heredoc body, a sed that edits in place, the input side
+  assert.notEqual(actionDigestOf("Bash", { command: `${plan} -detailed-exitcode | tail -5` }), a);
+  assert.notEqual(actionDigestOf("Bash", { command: `cd ~/a && ${plan}` }), actionDigestOf("Bash", { command: `cd ~/b && ${plan}` }));
+  assert.notEqual(actionDigestOf("Bash", { command: `AWS_PROFILE=x ${plan}` }), a);
+  assert.notEqual(actionDigestOf("Bash", { command: "python3 - <<'PY'\nprint(1)\nPY" }), actionDigestOf("Bash", { command: "python3 - <<'PY'\nprint(2)\nPY" }));
+  assert.equal(producerIdentity("cat f | sed -i s/a/b/ g"), "cat f ; sed -i s/a/b/ g");
+  assert.equal(producerIdentity("cat f | sed -n 1,5p"), "cat f");
+  assert.equal(producerIdentity("sort < in.txt | uniq -c"), "sort < in.txt");
+  assert.equal(producerIdentity("grep -rn foo src/"), "grep -rn foo src/", "a consumer at the head of a pipeline is the producer");
+  assert.equal(producerIdentity("echo hi"), "echo hi", "nothing but a label: the command itself");
+  assert.equal(producerIdentity("  echo  hi  "), "echo hi");
+  assert.equal(producerIdentity("node server.js & sleep 2"), "node server.js ; sleep 2");
+  assert.equal(actionDigestOf("Edit", { file_path: "a", old_string: "x", new_string: "y" }), digestOf("Edit", { file_path: "a", old_string: "x", new_string: "y" }), "other tools: the whole input, as before");
+  assert.equal(classifyAction("Bash", { command: "node --test & sleep 1" }).kind, "check", "the tokenizer change keeps classification");
+});
+
+test("terraform: the summary lines decide, because `| tail` masks the exit status", () => {
+  assert.equal(checkSummary("Planning failed. Terraform encountered an error while generating this plan.\n\nError: Retrieving AWS account details: ExpiredToken"), "fail");
+  assert.equal(checkSummary("Error: Unsupported argument\n\n  on main.tf line 12, in resource \"aws_s3_bucket\" \"b\":"), "fail");
+  assert.equal(checkSummary("╷\n│ Error: Invalid provider configuration\n│\n│   with provider[\"registry.terraform.io/hashicorp/aws\"],"), "fail");
+  assert.equal(checkSummary("No changes. Your infrastructure matches the configuration."), "pass");
+  assert.equal(checkSummary("Plan: 1 to add, 0 to change, 0 to destroy."), "pass");
+  assert.equal(checkSummary("Success! The configuration is valid."), "pass");
+  assert.equal(checkSummary("Changes to Outputs:\n  + x = 1\n\nYou can apply this plan to save these new output values to the Terraform state, without changing any real infrastructure."), "pass");
+  assert.equal(checkSummary("Error: something unrelated printed by a script"), undefined, "an Error line alone is not terraform");
+  assert.equal(checkSummary("(Bash completed with no output)"), undefined);
+  assert.equal(actionOutcome("check", { output: "Planning failed. Terraform encountered an error while generating this plan.\n\nError: x\n  on a.tf line 1", hostSuccess: true }), "fail", "the pipeline said 0, terraform said no");
 });

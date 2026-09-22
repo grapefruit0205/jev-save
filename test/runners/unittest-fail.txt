@@ -1,0 +1,12 @@
+======================================================================
+FAIL: test_managed_service_start_runner_is_one_use_and_preclaimed (tests.test_click_gate_service.ClickGateServiceTests.test_managed_service_start_runner_is_one_use_and_preclaimed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/repo/tests/test_click_gate_service.py", line 99, in test_managed_service_start_runner_is_one_use_and_preclaimed
+    self.assertEqual(CLICK_GATE._run_service_start(arguments), 0)
+AssertionError: 2 != 0
+
+----------------------------------------------------------------------
+Ran 8 tests in 5.333s
+
+FAILED (failures=4)

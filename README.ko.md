@@ -2,7 +2,7 @@
   <img src="assets/icon.svg" width="96" alt="jev-save">
   <h1>jev-save</h1>
   <p><strong>코딩 에이전트를 위한 runtime 효율 guard. <a href="https://typesafe.ai/">Jev</a>로 판단합니다.</strong></p>
-  <p>Claude Code나 Codex가 tool call을 실행하기 직전에, 그 호출이 지금 필요한지, 아직 유효한 결과를 반복하는지, 사용자가 부탁한 범위를 넓히는지를 Jev에게 묻습니다.</p>
+  <p>Claude Code나 Codex가 tool call을 실행하기 직전에, 세션 원장이 그 호출이 이미 한 일의 반복인지 말하고, Jev에게는 지금 필요한지, 사용자가 부탁한 범위를 넓히는지, 반복이라면 에이전트가 이유를 댔는지 묻습니다.</p>
   <p><a href="README.md">English</a> · <a href="https://github.com/leepokai/jev-guard">leepokai/jev-guard</a> 기반</p>
 </div>
 
@@ -41,10 +41,14 @@ Jev는 코드를 쓰지 않고 계획도 세우지 않습니다. 어떻게 풀�
 ```
 사용자 프롬프트 ──► UserPromptSubmit hook ──► ledger: 새 턴, 요청 기록
 tool call      ──► PreToolUse hook ──────► 분류 ──► Jev에 물을 호출인가? ──► Jev 요청 한 번 ──► 정책 ──► allow / 권고 / ask / deny
-tool 결과       ──► PostToolUse hook ─────► ledger: 결과(pass / fail / unknown), 소요 시간
+tool 결과       ──► PostToolUse hook ─────► ledger: 결과(pass / fail / unknown), 소요 시간, 출력 크기
 ```
 
-**ledger.** hook은 호출마다 별도 프로세스로 뜨므로, 세션의 기억은 `~/.jev-save/sessions/` 아래 세션당 하나인 append-only JSONL 파일입니다. 프롬프트, 제안된 호출(도구, 종류, 가려진 미리보기, 경로), 결과가 호스트의 `tool_use_id`로 이어져 기록됩니다. 결과가 끝내 오지 않은 호출은 (호스트가 중단됐거나 새 프롬프트가 먼저 왔거나) `unknown`이고, `unknown`은 절대 증거로 쓰지 않습니다. 여기서 guard는 눈앞의 호출에 대해 이런 것을 뽑아냅니다. 같은 행동이 이 턴에 몇 번 있었는지, 지난번 결과가 무엇이었는지, 마지막 통과 이후 무엇이 바뀌었는지, 그래서 그 통과가 아직 *valid*인지 *stale*인지 *unknown*인지.
+**ledger.** hook은 호출마다 별도 프로세스로 뜨므로, 세션의 기억은 `~/.jev-save/sessions/` 아래 세션당 하나인 append-only JSONL 파일입니다. 프롬프트, 제안된 호출(도구, 종류, 가려진 미리보기, 경로), 결과가 호스트의 `tool_use_id`로 이어져 기록됩니다. 결과가 끝내 오지 않은 호출은 (호스트가 중단됐거나 새 프롬프트가 먼저 왔거나) `unknown`이고, `unknown`은 절대 증거로 쓰지 않습니다. 여기서 guard는 눈앞의 호출에 대해 이런 것을 뽑아냅니다. 같은 행동이 이 턴에 몇 번 있었는지, 지난번 결과가 무엇이었고 얼마나 걸렸는지, 마지막 통과 이후 무엇이 바뀌었는지, 그래서 그 통과가 아직 *valid*인지 *stale*인지 *unknown*인지, 그리고 아무것도 바뀌지 않은 채 같은 실패가 몇 번 쌓였는지.
+
+"같은 행동"은 정확한 명령 문자열이 아니라 *생산자*입니다. `terraform plan | tail -250`과 `terraform plan | grep "No changes"`는 같은 행동을 다른 파이프로 본 것입니다(파이프라인 소비자, 라벨용 echo, 출력 리다이렉트는 버리고 플래그, `cd`, 환경 변수 대입, heredoc 본문은 남깁니다). 답변 캐시는 여전히 정확한 입력을 키로 씁니다.
+
+Claude Code에서는 호스트 자신의 트랜스크립트 끝부분도 읽습니다. hook이 절대 전해주지 않는 두 가지 때문입니다. PostToolUse가 뜨지 않은 호출의 결과(`dontAsk` 모드의 권한 거부는 항목을 *실행 안 됨*으로 닫아서 실행으로도 변경으로도 세지 않음), 그리고 호출 직전 에이전트가 말한 것, 즉 밝힌 이유입니다.
 
 **분류는 결정론적이고 오프라인입니다.** 모델이 관여하기 전에 명령을 세그먼트로 나누고(heredoc 본문 제거, 따옴표 존중) 첫 단어로 분류합니다. test·build·lint runner면 `check`이고(runner regex와 runner 출력 파서 26종은 [jev-belay](https://github.com/valentynkit/jev-belay)에서 가져왔습니다), `sed -i`, 리다이렉트, `rm`, 패키지 설치, 트리를 건드리는 git 작업은 쓰기이며, 스크립트와 알 수 없는 명령은 일부러 변경으로 셉니다. Claude Code는 명령의 exit code를 알려주지 않으므로 검사의 통과 여부는 runner가 출력에 남기는 요약 줄에서 읽습니다.
 
@@ -54,18 +58,27 @@ tool 결과       ──► PostToolUse hook ─────► ledger: 결과(p
 | --- | --- | --- |
 | `in_scope` | 예/아니오 | 요청을 완수하는 데 필요한 작업인가? 관련 코드 읽기나 변경에 대한 테스트 추가 같은 보조 작업을 포함해서 |
 | `necessary` | 예/아니오 | 이미 한 일과 알게 된 것을 볼 때 이 호출이 지금 요청을 진전시키는가? |
-| `redundant` | 예/아니오 | 아직 유효한 결과를 새 정보 기대 없이 반복하는가? |
 | `scope_expansion` | 예/아니오 | 새 추상화, 무관한 리팩터링, migration, 추가 기능, 사용자가 제외한 영역의 편집을 들여오는가? |
 | `kind` | 선택 | progress · verification · exploration · repetition · expansion |
+| `expects_new_information` | 예/아니오 | 이미 실행된 호출을 반복할 때만 묻는다. 에이전트의 직전 서술이 다른 결과를 기대할 구체적 이유를 말하는가? 앞 결과가 틀렸다는 의심, 바뀐 입력, 적용한 수정, 큰 출력의 다른 부분 |
 | `risk`, `approval`, `user_requested` | jev-guard의 질문 | 얼마나 해로울 수 있는가, 신중한 엔지니어라면 사람의 확인을 원할까, 사용자가 정확히 이것을 부탁했는가? |
 
-**정책은 코드이고 순수 함수입니다.** 보안이 먼저입니다. risk 2.5 이상은 deny, 1.5 이상은 ask이며, 사용자의 명시적 요청은 ask를 풀 수 있어도 deny는 풀지 못합니다. 그다음 권고는 우선순위에 따라 최대 하나입니다. *scope*(expansion 0.85 이상, 또는 in_scope 0.15 이하이면서 expansion 0.5 이상. 두 신호가 일치해야 하고 비교할 요청이 있어야 함), *redundant*(0.85 이상이고 ledger가 마지막 통과를 아직 valid로 볼 때만), *necessary*(0.20 이하). 잔소리를 막는 억제 규칙이 있습니다. 같은 행동에 턴당 한 번, 턴당 세 번, 연속 두 호출에는 내지 않음. 모델이 권고를 읽고도 같은 일을 하면 jev-save는 침묵합니다. 정당한 고집일 수 있으니까요.
+`redundant` 질문은 없어졌습니다. 원장의 사실(같은 생산자, 직전 실행 통과, 그 뒤 변경 없음)을 그대로 보여줘도 Jev는 무인 실행 시험의 plan 재실행에 0.07~0.18로 답했습니다. 그래서 반복인지는 원장이 정하고, Jev는 예외를 정합니다.
+
+**정책은 코드이고 순수 함수입니다.** 보안이 먼저입니다. risk 2.5 이상은 deny, 1.5 이상은 ask이며, 사용자의 명시적 요청은 ask를 풀 수 있어도 deny는 풀지 못합니다. 그다음 권고는 우선순위에 따라 최대 하나입니다.
+
+- *scope* — expansion 0.85 이상, 또는 in_scope 0.15 이하이면서 expansion 0.5 이상(두 신호가 일치해야 하고 비교할 요청이 있어야 함), 또는 in_scope 0.15 이하이면서 approval 0.9 이상. 마지막은 범위를 넓히는 행동이 아니라 금지된 행동입니다("commit 금지"에 대한 commit이 in_scope 0.04, approval 0.96, expansion 0.44).
+- *repeat-failure* — 원장의 사실. 같은 행동이 연속 두 번 실패했고 그 사이 아무것도 바뀌지 않음. `#53 and #59 ran this and failed; nothing changed since. Fix the cause before running it again.`
+- *redundant* — 원장의 사실. 이 행동의 직전 실행이 통과했고, 그 뒤 바뀐 게 없고, 다시 돌리는 데 비용이 듦(5초 이상 또는 출력 4 KB 이상). `#11 ran this (14 s) and passed; nothing changed since. If you need another part of its output, save it once instead of re-running.` `expects_new_information` 0.8 이상이면 거둡니다. "grep 결과가 비어서 이상하다, 전체를 보자"는 이유이고, "다음은 ALB 속성을 보자"는 이유가 아닙니다.
+- *necessary* — 0.20 이하.
+
+잔소리를 막는 억제 규칙이 있습니다. 같은 행동에 같은 종류의 권고는 5호출에 한 번, 20호출에 세 번, 연속 두 호출에는 내지 않음. 모델이 권고를 읽고도 같은 일을 하면 jev-save는 침묵합니다. 정당한 고집일 수 있으니까요.
 
 **보안 대상은 효율 분류와 별도로 정합니다.** security가 `on` 또는 `log`이면 모든 셸·MCP 호출이 판단 후보입니다. 이름이나 명령이 읽기처럼 보여도 동일합니다. 셸 분류는 추정 규칙이며 보안 경계가 아닙니다. 전용 읽기·검색 도구는 같은 턴에서 반복되거나 턴의 호출이 이미 12번을 넘었을 때 판단합니다. security가 `off`이면 셸·MCP에도 선택적인 효율 판단 규칙을 적용합니다. 명시적인 `JEV_SAVE_SKIP_TOOLS` 제외와 세션 상한은 계속 적용됩니다.
 
 **비용은 제한됩니다.** 기본 상한은 세션당 provider 호출 시도 200번입니다. provider 실행 전에 ledger 잠금 안에서 횟수를 예약하며 실패도 차감합니다. 동시 hook도 같은 상한을 공유합니다. cache 적중은 차감하지 않고, provider 호출 내부의 HTTP 재시도는 같은 예약에 포함됩니다. cache 키에는 state 전체와 질문 묶음이 포함됩니다. 오류는 기본적으로 호출을 통과시키고 기록합니다. `JEV_SAVE_FAIL_CLOSED`의 오류 차단은 `advise` 모드이면서 security가 `on`인 보안 대상 호출에만 적용됩니다. shadow 모드와 security `log`/`off`에서는 오류로 차단하지 않습니다.
 
-**증거는 보수적으로 유지합니다.** 같은 행동이 나중에 실패하면 이전 통과는 유효하지 않고, 결과가 불명확하거나 실행 중이면 불확실합니다. 모든 ledger 추가 기록과 compaction은 같은 잠금을 사용합니다. compaction 후에도 최초 요청, 전체 호출 시도 수, 호출·턴 번호는 보존됩니다. 잠금 시간 초과나 쓰기 실패 시 `.jsonl.uncertain` 표시를 남기고 해당 세션의 validity를 unknown으로 두며 새 provider 호출을 중단합니다. 도구 실행은 계속 허용합니다. 오래된 잠금도 임의로 빼앗지 않습니다. 프로세스 중단으로 잠금만 남았다면 새 세션을 시작하세요. 남은 세션 파일을 수동 정리할 때는 먼저 호스트를 종료해야 합니다.
+**증거는 보수적으로 유지합니다.** 같은 행동이 나중에 실패하면 이전 통과는 유효하지 않고, 같은 행동의 결과가 불명확하거나 실행 중이면 불확실합니다. 끝나지 않은 변경은 변경으로 세고, 끝나지 않은 읽기는 아무것도 아닙니다. terraform 실행의 판정은 자체 요약 줄에서 얻습니다. `| tail`이 종료 코드를 가리기 때문입니다. 모든 ledger 추가 기록과 compaction은 같은 잠금을 사용합니다. compaction 후에도 최초 요청, 전체 호출 시도 수, 호출·턴 번호는 보존됩니다. 잠금 시간 초과나 쓰기 실패 시 `.jsonl.uncertain` 표시를 남기고 해당 세션의 validity를 unknown으로 두며 새 provider 호출을 중단합니다. 도구 실행은 계속 허용합니다. 오래된 잠금도 임의로 빼앗지 않습니다. 프로세스 중단으로 잠금만 남았다면 새 세션을 시작하세요. 남은 세션 파일을 수동 정리할 때는 먼저 호스트를 종료해야 합니다.
 
 **shadow가 먼저지만, 길 필요는 없습니다.** 배포 기본값은 모든 판단을 `~/.jev-save/decisions.jsonl`에 기록하고 에이전트에게는 아무것도 보내지 않습니다. advise 모드도 똑같이 기록하므로 일찍 켜도 잃는 것이 적습니다. 잘못된 효율 권고는 에이전트가 무시할 수 있는 한 줄이고, 로그에는 무엇이 발동했고 에이전트가 방향을 바꿨는지가 남습니다. shadow 기간이 주는 것은 권고 없는 기준선인데, 그것은 나중에 fixture A/B로 얻을 수 있습니다. 켜기 전에 정할 것은 보안 게이트 하나입니다. 그 `ask`는 실제 승인 프롬프트가 되므로(실측에서 `sed -i` 편집이 risk 1.7), 호스트가 이미 권한 분류기를 돌린다면 `jev-save security log`로 두세요.
 

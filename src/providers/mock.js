@@ -24,7 +24,7 @@ const DEFAULT_RULES = {
   },
   necessary(state, a) {
     const c = state.context ?? {};
-    if (a.redundant >= 0.9) return 0.1;
+    if (a.redundant >= 0.9) return 0.45;   // what Jev actually answers on a plain repeat (0.49–0.65 on the headless trial): the ledger, not necessary, owns repeats
     const kind = String(c.proposed_action_kind ?? "");
     if (/^(read|search)/.test(kind) && (c.this_turn?.reads ?? 0) + (c.this_turn?.searches ?? 0) >= 8 && (c.this_turn?.edits ?? 0) === 0) return 0.15;
     return 0.9;
@@ -32,6 +32,10 @@ const DEFAULT_RULES = {
   kind(state, a) {
     const k = String(state.context?.proposed_action_kind ?? "");
     return a.scope_expansion >= 0.85 ? "expansion" : a.redundant >= 0.85 ? "repetition" : /^check/.test(k) ? "verification" : /^(read|search)/.test(k) ? "exploration" : "progress";
+  },
+  // the agent said why it runs this again: a suspected bad result, a changed input, a fix, another slice of the output
+  expects_new_information(state) {
+    return /odd|empty|expired|refresh|changed|fixed|full output|whole output|again with/i.test(String(state.context?.agent_stated_reason ?? "")) ? 0.9 : 0.1;
   },
 };
 
@@ -43,7 +47,8 @@ export function mockProvider({ rules = {}, latencyMs = 0, name = "mock" } = {}) 
       if (latencyMs) await new Promise((res) => setTimeout(res, latencyMs));
       const a = {};
       // evaluate in dependency order, then keep only the ids that were asked
-      for (const id of ["risk", "approval", "user_requested", "from_untrusted", "scope_expansion", "in_scope", "redundant", "necessary", "kind"]) a[id] = r[id](state, a);
+      for (const id of ["risk", "approval", "user_requested", "from_untrusted", "scope_expansion", "in_scope", "redundant", "necessary", "kind", "expects_new_information"]) a[id] = r[id](state, a);
+      for (const id of Object.keys(questions)) if (!(id in a) && typeof r[id] === "function") a[id] = r[id](state, a);   // per-test extra rules
       const out = {};
       for (const [id, q] of Object.entries(questions)) {
         if (!(id in a)) continue;

@@ -1,9 +1,12 @@
 // Pure policy over Jev's answers and the ledger view. No I/O, no API: everything here runs in tests.
 //
 // Order: jev-guard's security decision first (deny / ask), then at most one efficiency advisory —
-// scope, then redundant, then necessary — subject to the suppression rules of docs/design.md v0.3.
-// Efficiency judgments never block in this version; they produce a short, fact-first message that the
-// guard emits as additionalContext in advise mode and only logs in shadow mode.
+// scope, then repeat-failure, then redundant, then necessary — subject to the suppression rules below.
+// The two repeat rules read the ledger only: whether a call repeats one that ran, how that run ended, what it
+// cost and what changed since are facts the ledger records, and Jev never confirmed them (bundle v2 note in
+// questions.js). Jev's part in a repeat is the exception: a stated reason to expect something new.
+// Efficiency judgments never block; they produce a short, fact-first message that the guard emits as
+// additionalContext in advise mode and only logs in shadow mode.
 import { decide as securityDecide, thresholds as securityThresholds } from "../guard.js";
 import { clip } from "./ledger.js";
 import "./types.js";
@@ -16,9 +19,19 @@ export function thresholds(env = process.env) {
     necessaryP: n("JEV_SAVE_NECESSARY_P", 0.2),
     expansionP: n("JEV_SAVE_EXPANSION_P", 0.85),
     inScopeP: n("JEV_SAVE_INSCOPE_P", 0.15),
-    redundantP: n("JEV_SAVE_REDUNDANT_P", 0.85),
-    maxAdvisoriesPerTurn: n("JEV_SAVE_MAX_ADVISORIES", 3),
+    // off-request *and* needing approval: a forbidden action rather than an added one (a commit against "no
+    // commits" scored in_scope 0.04 / approval 0.96 / expansion 0.44). 0 of 354 interactive decisions reach it.
+    approvalScopeP: n("JEV_SAVE_APPROVAL_SCOPE_P", 0.9),
+    // a repeat is worth a line only when re-running costs something: wall time or context
+    repeatMinMs: n("JEV_SAVE_REPEAT_MIN_MS", 5000),
+    repeatMinChars: n("JEV_SAVE_REPEAT_MIN_CHARS", 4000),
+    // the agent's stated reason lifts a redundant advisory at or above this
+    reasonP: n("JEV_SAVE_REASON_P", 0.8),
+    // identical failures before the next attempt is called a loop
+    failRepeats: n("JEV_SAVE_FAIL_REPEATS", 2),
+    maxAdvisoriesPerWindow: n("JEV_SAVE_MAX_ADVISORIES", 3),
     cooldownCalls: n("JEV_SAVE_COOLDOWN_CALLS", 2),
+    actionCooldownCalls: n("JEV_SAVE_ACTION_COOLDOWN_CALLS", 5),
   };
 }
 
@@ -34,7 +47,7 @@ const margin = (x) => (x == null ? 0 : Math.abs(x - 0.5) * 2);
  */
 export function decide(answers, view, cls, t = thresholds(), { securityMode = "on" } = {}) {
   const signals = {};
-  for (const id of ["in_scope", "necessary", "redundant", "scope_expansion", "approval", "user_requested", "from_untrusted"]) if (p(answers[id]) != null) signals[id] = round(p(answers[id]));
+  for (const id of ["in_scope", "necessary", "redundant", "scope_expansion", "expects_new_information", "approval", "user_requested", "from_untrusted"]) if (p(answers[id]) != null) signals[id] = round(p(answers[id]));
   if (typeof answers.risk?.score === "number") signals.risk = round(answers.risk.score);
   if (answers.kind?.choice) signals.kind = answers.kind.choice;
 
@@ -62,33 +75,44 @@ export function decide(answers, view, cls, t = thresholds(), { securityMode = "o
 
   // 2. one efficiency advisory at most, by priority
   let advisory = null;
-  const inScope = p(answers.in_scope), expansion = p(answers.scope_expansion), necessary = p(answers.necessary), redundant = p(answers.redundant);
+  const inScope = p(answers.in_scope), expansion = p(answers.scope_expansion), necessary = p(answers.necessary), approval = p(answers.approval), reason = p(answers.expects_new_information);
   // scope needs a request to be measured against, and the two signals must agree: a low in_scope with a low
   // scope_expansion means "not needed", which is necessary's case, not scope's (first live false positive:
   // in_scope 0.15 / expansion 0.18 against a pasted terminal output that had been taken for the request)
-  const scopeHit = view.original_request && expansion != null && (expansion >= t.expansionP || (inScope != null && inScope <= t.inScopeP && expansion >= 0.5));
+  const offRequest = inScope != null && inScope <= t.inScopeP;
+  const scopeHit = view.original_request && ((expansion != null && (expansion >= t.expansionP || (offRequest && expansion >= 0.5))) || (offRequest && approval != null && approval >= t.approvalScopeP));
+  const costly = (view.last_duration_ms ?? 0) >= t.repeatMinMs || (view.last_output_chars ?? 0) >= t.repeatMinChars;
   if (scopeHit) {
     fired.push("scope");
-    const prob = expansion >= t.expansionP ? expansion : 1 - inScope;
+    const prob = expansion != null && expansion >= t.expansionP ? expansion : 1 - inScope;
     advisory = { rule: "scope", text: `jev-save: this looks outside the request «${clip(view.original_request ?? "", 80)}» (scope p=${round(prob)}). Keep to the request, or ask the user before widening it.` };
-  } else if (redundant != null && redundant >= t.redundantP && view.validity === "valid" && view.last_outcome_of_this_action === "pass" && view.last_pass_seq != null) {
+  } else if ((view.failed_runs ?? []).length >= t.failRepeats) {
+    fired.push("repeat-failure");
+    advisory = { rule: "repeat-failure", text: `jev-save: ${seqs(view.failed_runs)} ran this and failed; nothing changed since. Fix the cause before running it again.` };
+  } else if (view.validity === "valid" && view.last_outcome_of_this_action === "pass" && view.last_pass_seq != null && costly) {
     fired.push("redundant");
-    advisory = { rule: "redundant", text: `jev-save: #${view.last_pass_seq} ran this and passed; nothing observed changed since. Skip it unless you expect new information.` };
+    const cost = view.last_duration_ms >= t.repeatMinMs ? ` (${Math.round(view.last_duration_ms / 1000)} s)` : "";
+    const hint = view.last_run_same_input === false ? "If you need another part of its output, save it once instead of re-running." : "Skip it unless you expect new information.";
+    advisory = { rule: "redundant", text: `jev-save: #${view.last_pass_seq} ran this${cost} and passed; nothing changed since. ${hint}` };
+    if (reason != null && reason >= t.reasonP) advisory.why = "the agent stated a reason to expect new information";
   } else if (necessary != null && necessary <= t.necessaryP) {
     fired.push("necessary");
     advisory = { rule: "necessary", text: `jev-save: this call looks unlikely to move the request forward (necessary p=${round(necessary)}). ${necessaryDetail(view, cls)}` };
   }
 
   if (advisory) {
-    const why = view.advisories_for_this_action_this_turn >= 1 ? "already advised on this action this turn"
-      : view.advisories_this_turn >= t.maxAdvisoriesPerTurn ? "advisory budget for this turn spent"
+    // the same rule on the same action is said once per cooldown; a different finding on it (a loop after a repeat) is new
+    const sameRule = (view.advised_for_this_action ?? []).filter((a) => a.rule === advisory.rule).at(-1);
+    const why = advisory.why
+      ?? (sameRule && sameRule.calls_since < t.actionCooldownCalls ? "already advised on this action recently"
+      : view.advisories_in_window >= t.maxAdvisoriesPerWindow ? "advisory budget spent"
       : view.calls_since_last_advisory < t.cooldownCalls ? "cooldown after the last advisory"
-      : null;
+      : null);
     advisory.suppressed = Boolean(why);
     if (why) advisory.why = why;
   }
   const rule = fired.find((f) => !f.startsWith("security:"));
-  const used = rule === "scope" ? [expansion, inScope] : rule === "redundant" ? [redundant] : rule === "necessary" ? [necessary] : [necessary, inScope];
+  const used = rule === "scope" ? [expansion, inScope] : rule === "necessary" ? [necessary] : rule ? [] : [necessary, inScope];   // the repeat rules are the ledger's facts: margin 1
   return { ...result("ALLOW", "", signals, fired, used), advisory };
 }
 
@@ -98,6 +122,8 @@ function necessaryDetail(view, cls) {
   if (k.read + k.search >= 6 && k.edit === 0) return `The last ${k.read + k.search} calls were reads and searches with no edit; if you already know what to change, make the change.`;
   return "If the next step is already clear, take it.";
 }
+
+const seqs = (list) => (list.length <= 1 ? list.map((s) => `#${s}`).join("") : `${list.slice(0, -1).map((s) => `#${s}`).join(", ")} and #${list[list.length - 1]}`);
 
 function result(decision, reason, signals, fired, used) {
   return { decision, reason, signals, fired, decisionMargin: round(Math.min(...used.filter((x) => x != null).map(margin), 1)), advisory: null };

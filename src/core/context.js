@@ -54,7 +54,7 @@ const len = (s) => (typeof s === "string" ? s.length : 0);
  * @param {{kind:string, runner?:string}} cls
  * @param {View} v
  */
-export function buildState(action, cls, v, { home } = {}) {
+export function buildState(action, cls, v, { home, statedReason = null } = {}) {
   const instructions = dedupe(v.recent_instructions);
   const context = {
     user_recent_messages: instructions,
@@ -67,6 +67,9 @@ export function buildState(action, cls, v, { home } = {}) {
     last_outcome_of_this_action: v.last_outcome_of_this_action ?? "never ran",
     changed_since_last_pass: v.changed_since_last_pass,
     validity: v.validity,
+    // the agent's own last words before this call (already redacted and clipped by the guard), only when the
+    // call repeats one that ran: the `expects_new_information` question reads it
+    agent_stated_reason: statedReason || undefined,
   };
   for (const k of Object.keys(context)) if (context[k] === undefined || (Array.isArray(context[k]) && !context[k].length && k !== "changed_since_last_pass")) delete context[k];
   return { agent: action.agent, tool: action.tool, input: projectInput(action.tool, action.input, home), cwd: redact(String(action.cwd ?? ""), home), context };

@@ -11,6 +11,8 @@
  * @property {string} cwd
  * @property {string} sessionId
  * @property {string} [toolUseId]     the host's execution key; digest is only for "same action?"
+ * @property {string} [transcriptPath] the host's own transcript (Claude Code): read for the agent's stated reason
+ *                                    and for the outcome of calls that fired no PostToolUse (a denial)
  */
 
 /**
@@ -22,7 +24,8 @@
  * @property {number} at              Date.now()
  * @property {number} [turn]          prompt: the new turn number; pre: the turn it belongs to
  * @property {string} [text]          prompt: redacted, clipped
- * @property {string} [digest]        prompt: sha of the full text; pre: action identity (evidence.digestOf)
+ * @property {string} [digest]        prompt: sha of the full text; pre: exact-input identity (evidence.digestOf)
+ * @property {string} [action]        pre: producer identity (evidence.actionDigestOf); the key of every "same action" question
  * @property {string} [tool_use_id]
  * @property {string} [tool]
  * @property {ActionKind} [kind]
@@ -38,10 +41,12 @@
  * @property {string|null} [original_request] snapshot: first real prompt
  * @property {number} [turn_offset]   snapshot: turns omitted from the retained history
  * @property {number} [seq_offset]    snapshot: pre events omitted from the retained history
- * @property {boolean} [advised]      pre: true when an advisory was emitted to the agent
- * @property {ExecState} [exec]       pre: running | blocked;  post: completed | failed
+ * @property {false|string} [advised] pre: the rule whose advisory was sent to the agent, or false
+ * @property {ExecState} [exec]       pre: running | blocked;  post: completed | failed | denied (never ran; replays as blocked)
  * @property {Result} [result]        post
  * @property {number} [duration_ms]   post
+ * @property {number} [output_chars]  post: size of the tool's output — what re-running would cost in context
+ * @property {'transcript'} [source]  post: written by reconcile() from the host's transcript, not by a PostToolUse hook
  */
 
 /** @typedef {'check'|'read'|'search'|'edit'|'write-bash'|'vcs'|'external'|'external-write'|'other'} ActionKind */
@@ -65,12 +70,14 @@
  * @property {string} cwd
  * @property {Decision} decision
  * @property {boolean} judged
- * @property {boolean} advised
+ * @property {false|string} advised   the rule sent to the agent, or false
  * @property {ExecState} exec
  * @property {Result|null} result
  * @property {number} started_at
  * @property {number|null} ended_at
  * @property {number|null} duration_ms
+ * @property {number|null} output_chars
+ * @property {string} action           producer identity (evidence.actionDigestOf); `digest` is the exact input
  */
 
 /**
@@ -82,15 +89,21 @@
  * @property {LedgerEntry[]} recent             last 10 entries, oldest first
  * @property {number} calls_this_turn
  * @property {{read:number, search:number, check:number, edit:number}} kinds_this_turn
- * @property {number} same_action_count_this_turn   entries in this turn with the same digest (any exec state)
+ * @property {number} same_action_count_this_turn   entries in this turn with the same action identity (any exec state)
  * @property {Result|null} last_outcome_of_this_action
+ * @property {boolean|null} last_run_same_input     whether that run had this exact input (false: same producer, another pipe)
+ * @property {number|null} last_duration_ms         what that run cost in wall time
+ * @property {number|null} last_output_chars        and in context
+ * @property {number[]} failed_runs                 seqs of the trailing failed runs of this action, nothing changed since
  * @property {number|null} last_pass_seq
  * @property {string[]} changed_since_last_pass      previews of change-kind entries after last_pass_seq
  * @property {boolean} unknown_since_last_pass
  * @property {'valid'|'stale'|'unknown'|'none'} validity
  * @property {number} jev_calls                      provider invocation attempts, including failures
  * @property {number} advisories_this_turn
+ * @property {number} advisories_in_window           advisories among the last 20 entries (a headless run is one long turn)
  * @property {number} advisories_for_this_action_this_turn
+ * @property {{rule:string, calls_since:number}[]} advised_for_this_action   advisories sent on this action this turn, oldest first
  * @property {number} calls_since_last_advisory       Infinity when none this turn
  */
 

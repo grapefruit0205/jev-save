@@ -1,12 +1,14 @@
-// The guard: three entry points for every host adapter.
+// The guard: three entry points for every host adapter, plus one the host never calls.
 //   recordPrompt(sessionId, text)            UserPromptSubmit → a new turn
 //   assess(action, opts)                     PreToolUse       → classify, decide whether to ask Jev, ask, decide, remember, log
 //   recordResult(sessionId, result)          PostToolUse / PostToolUseFailure → close the entry
+//   reconcile(sessionId, results)            from the host's transcript, inside assess: close the entries no hook closed
 // Errors fail open by default; fail-closed requires advise + security on. See docs/design.md.
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { actionOutcome, classifyAction, digestOf, pathsOf, previewOf, redact, requiresSecurity } from "./evidence.js";
-import { append, cwdIdOf, DEFAULT_DIR, readEvents, replay, reserveCall, view } from "./ledger.js";
+import { actionDigestOf, actionOutcome, classifyAction, digestOf, pathsOf, previewOf, redact, requiresSecurity } from "./evidence.js";
+import { append, clip, cwdIdOf, DEFAULT_DIR, readEvents, replay, reserveCall, view } from "./ledger.js";
+import { readTranscript } from "./transcript.js";
 import { buildState } from "./context.js";
 import { BUNDLE_VERSION, bundle } from "./questions.js";
 import { decide, thresholds } from "./policy.js";
@@ -83,17 +85,24 @@ export async function assess(action, { provider, env = process.env, config = {},
   const cls = classifyAction(action.tool, action.input, env);
   cls.securityRequired = requiresSecurity(action.tool, cls);
   const digest = digestOf(action.tool, action.input);
+  const actionId = actionDigestOf(action.tool, action.input);
   const preview = previewOf(action.tool, action.input, 120, home);
   const paths = pathsOf(action.tool, action.input).map((p) => redact(p, home));
   const base = { decision: "SKIP", advisory: null, emit: null, signals: {}, cls, digest, judged: false, cached: false, latencyMs: null, mode: s.mode };
   const cwdId = cwdIdOf(action.cwd);
-  const pre = (extra) => ({ ev: "pre", attempt_recorded: true, turn: 0, tool_use_id: action.toolUseId, tool: action.tool, kind: cls.kind, runner: cls.runner, digest, preview, paths, cwd: redact(String(action.cwd ?? ""), home), cwd_id: cwdId, mode: s.mode, exec: "running", ...extra });
-  const log = (extra) => logDecision({ event: "pre", session: sha(action.sessionId).slice(0, 12), agent: action.agent, tool: action.tool, kind: cls.kind, digest, preview, mode: s.mode, ...extra }, { path: logPath ?? undefined, now });
+  const pre = (extra) => ({ ev: "pre", attempt_recorded: true, turn: 0, tool_use_id: action.toolUseId, tool: action.tool, kind: cls.kind, runner: cls.runner, digest, action: actionId, preview, paths, cwd: redact(String(action.cwd ?? ""), home), cwd_id: cwdId, mode: s.mode, exec: "running", ...extra });
+  const log = (extra) => logDecision({ event: "pre", session: sha(action.sessionId).slice(0, 12), agent: action.agent, tool: action.tool, kind: cls.kind, digest, action: actionId, preview, mode: s.mode, ...extra }, { path: logPath ?? undefined, now });
+
+  // The host's transcript closes what the hooks could not (a denied call fires no PostToolUse) and carries the
+  // agent's stated reason for this call. Both are optional: no transcript, no reconciliation, no reason.
+  const transcript = action.transcriptPath ? readTranscript(action.transcriptPath) : null;
+  const statedReason = transcript?.narration ? clip(redact(transcript.narration, home), 400) : null;
 
   let state, v;
   try {
+    if (transcript?.results.size) reconcile(action.sessionId, transcript.results, { dir, now, env });
     state = replay(readEvents(action.sessionId, dir), { now });
-    v = view(state, { digest, cwdId });
+    v = view(state, { digest, action: actionId, cwdId });
   } catch (err) {
     log({ decision: "SKIP", why: "ledger", error: String(err?.message ?? err) });
     return base;
@@ -105,8 +114,10 @@ export async function assess(action, { provider, env = process.env, config = {},
   if (!gate.judge) { append(action.sessionId, pre({ turn, decision: "SKIP", judged: false }), { dir, now }); log({ turn, decision: "SKIP", why: gate.why }); return base; }
 
   const security = s.security !== "off" && cls.securityRequired;
-  const questions = bundle({ security, untrusted: false });
-  const jevState = buildState(action, cls, v, { home });
+  // the stated-reason question only makes sense for a call that repeats one that already ran
+  const reason = Boolean(statedReason) && v.last_outcome_of_this_action != null;
+  const questions = bundle({ security, untrusted: false, reason });
+  const jevState = buildState(action, cls, v, { home, statedReason: reason ? statedReason : null });
   const key = cacheKey(s.model, BUNDLE_VERSION, { state: jevState, questions });
   let answers = lookup(action.sessionId, dir, key);
   let cached = Boolean(answers), latencyMs = null;
@@ -139,25 +150,47 @@ export async function assess(action, { provider, env = process.env, config = {},
     else if (r.decision === "ASK") emit = { kind: "ask", text: r.reason };
     else if (r.advisory && !r.advisory.suppressed) emit = { kind: "context", text: r.advisory.text };
   }
-  const advised = emit?.kind === "context";
+  const advised = emit?.kind === "context" ? r.advisory.rule : false;   // which rule was sent, for the per-action cooldown
   append(action.sessionId, pre({ turn, decision: r.decision, judged: true, advised, exec: emit?.kind === "deny" ? "blocked" : "running" }), { dir, now });
   log({ turn, decision: r.decision, fired: r.fired, advisory: r.advisory ? { rule: r.advisory.rule, suppressed: r.advisory.suppressed, why: r.advisory.why } : null, emitted: emit?.kind ?? null,
     signals: r.signals, margin: r.decisionMargin, cached, latency_ms: latencyMs, provider: provider.name, model: cached ? undefined : provider.last?.model ?? s.model,
-    view: { calls: v.calls_this_turn, same: v.same_action_count_this_turn, validity: v.validity, last: v.last_outcome_of_this_action } });
+    view: { calls: v.calls_this_turn, same: v.same_action_count_this_turn, validity: v.validity, last: v.last_outcome_of_this_action, fails: v.failed_runs.length, last_ms: v.last_duration_ms, last_chars: v.last_output_chars, reason: reason || undefined } });
   return { ...base, decision: r.decision, advisory: r.advisory, emit, signals: r.signals, judged: true, cached, latencyMs, reason: r.reason };
 }
 
 /**
  * Close an entry. `failed` is the host's error flag (PostToolUseFailure, is_error), `interrupted` an
- * abort; `output` is stdout+stderr for the runner parsers. Returns the recorded result.
+ * abort; `output` is stdout+stderr for the runner parsers (its size is what re-running would cost in context).
+ * Returns the recorded result.
  */
 export function recordResult(sessionId, { toolUseId, tool, input = {}, failed = false, interrupted = false, output = "", hostSuccess = null, durationMs }, { dir = DEFAULT_DIR(), now = Date.now(), env = process.env } = {}) {
   if (!sessionId || !toolUseId) return null;
   const cls = classifyAction(tool, input, env);
   const result = actionOutcome(cls.kind, { failed, interrupted, output, hostSuccess });
   const exec = failed || interrupted ? "failed" : "completed";
-  append(sessionId, { ev: "post", tool_use_id: toolUseId, exec, result, ...(typeof durationMs === "number" ? { duration_ms: durationMs } : {}) }, { dir, now });
+  append(sessionId, { ev: "post", tool_use_id: toolUseId, exec, result, output_chars: String(output ?? "").length, ...(typeof durationMs === "number" ? { duration_ms: durationMs } : {}) }, { dir, now });
   return { kind: cls.kind, result, exec };
+}
+
+/**
+ * Close the entries still `running` whose result the host's transcript already shows: a denial (the call never
+ * ran: `denied`, which replay treats as blocked), an error, or a success that fired no PostToolUse the ledger
+ * saw. Idempotent: an entry closed once is no longer running.
+ * @param {Map<string, {error: boolean, denied: boolean, output: string}>} results
+ */
+export function reconcile(sessionId, results, { dir = DEFAULT_DIR(), now = Date.now(), env = process.env } = {}) {
+  const { entries } = replay(readEvents(sessionId, dir), { now });
+  let closed = 0;
+  for (const e of entries) {
+    if (e.exec !== "running") continue;
+    const r = results.get(e.tool_use_id);
+    if (!r) continue;
+    const post = r.denied
+      ? { exec: "denied", result: "unknown" }
+      : { exec: r.error ? "failed" : "completed", result: actionOutcome(e.kind, { failed: r.error, output: r.output, hostSuccess: !r.error }) };
+    if (append(sessionId, { ev: "post", tool_use_id: e.tool_use_id, ...post, output_chars: r.output.length, source: "transcript" }, { dir, now })) closed++;
+  }
+  return closed;
 }
 
 const sha = (s) => createHash("sha1").update(String(s ?? "")).digest("hex");
