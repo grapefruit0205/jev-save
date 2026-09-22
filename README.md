@@ -39,7 +39,7 @@ Measured live on 2026-09-21 with `jev-1.13.0`, request *"fix the login bug only,
 ## How it works
 
 ```
-user prompt ──► UserPromptSubmit hook ──► ledger: new turn, the request
+user prompt ──► UserPromptSubmit hook ──► one Jev request: what is this message? ──► ledger: new turn, the request as it now stands
 tool call   ──► PreToolUse hook ──────► classify ──► should Jev be asked? ──► one Jev request ──► policy ──► allow / advisory / ask / deny
 tool result ──► PostToolUse hook ─────► ledger: outcome (pass / fail / unknown), duration, output size
 ```
@@ -47,6 +47,8 @@ tool result ──► PostToolUse hook ─────► ledger: outcome (pass 
 **The ledger.** Every hook invocation is a separate process, so the session's memory is an append-only JSONL file per session under `~/.jev-save/sessions/`. It records each prompt, each proposed call (tool, kind, a redacted preview, paths) and each outcome, joined by the host's `tool_use_id`. A call whose result never arrived — the host was interrupted, a new prompt came first — is `unknown`, and `unknown` never counts as evidence. From this the guard derives, for the call in front of it: how many times the same action already ran this turn, what it returned last time and what that cost, what changed since the last passing run, whether that earlier pass is still *valid*, *stale* or *unknown*, and how many identical failures are stacked up with nothing changed between them.
 
 "The same action" is the *producer*, not the exact command: `terraform plan | tail -250` and `terraform plan | grep "No changes"` are one action seen through two pipes (consumers, label echoes and output redirects are stripped; flags, `cd`, environment assignments and heredoc bodies are kept). The exact input still keys the answer cache.
+
+**Which text is the request.** In a conversation the request is not the first prompt for ever. At each prompt Jev is asked one thing about the message itself — is it a *task*, an *approval* of what the assistant just proposed, pasted *material*, a *question*, or a *steer* — and whether it points at the assistant's previous message. A task (or a paste) replaces the request, together with the assistant message it refers to when it does; "부탁할게" after a proposal makes the proposal the request; a steer is appended to it; a question changes nothing. Every wrong scope advisory in the interactive log had come from measuring against the wrong text (a first prompt thirty turns old, a pasted document, an approval whose content was in the assistant's message); replayed with this tracking, the nine wrong ones went to zero and none of 26 in-scope controls turned wrong (docs/trial-2026-09-22.md). It costs one Jev call per prompt, about 0.7 s inside the UserPromptSubmit hook; when Jev is unavailable the prompt is recorded unclassified and the request stands.
 
 On Claude Code the guard also reads the tail of the host's own transcript, for two things the hooks never deliver: the outcome of a call that fired no PostToolUse — a permission denial in `dontAsk` mode closes the entry as *never ran*, so it neither counts as a run nor as a change — and the agent's last words before the call, its stated reason.
 
@@ -60,6 +62,7 @@ On Claude Code the guard also reads the tail of the host's own transcript, for t
 | `necessary` | yes/no | given what was already done and learned, does this call move the request forward now? |
 | `scope_expansion` | yes/no | does it introduce a new abstraction, an unrelated refactor, a migration, an extra feature, or an edit in an area the user excluded? |
 | `kind` | choice | progress · verification · exploration · repetition · expansion |
+| `message_kind`, `refers_to_previous` | choice, yes/no | at each prompt, not each call: task · approval · paste · question · steer, and does it point at the assistant's previous message? |
 | `expects_new_information` | yes/no | only when the call repeats one that ran: does the agent's own last narration give a concrete reason to expect a different result — a suspected bad result, a changed input, a fix, another slice of a large output? |
 | `risk`, `approval`, `user_requested` | jev-guard's | how much harm could it do; would a careful engineer want a human to confirm; did the user ask for exactly this? |
 

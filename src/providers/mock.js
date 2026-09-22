@@ -33,6 +33,19 @@ const DEFAULT_RULES = {
     const k = String(state.context?.proposed_action_kind ?? "");
     return a.scope_expansion >= 0.85 ? "expansion" : a.redundant >= 0.85 ? "repetition" : /^check/.test(k) ? "verification" : /^(read|search)/.test(k) ? "exploration" : "progress";
   },
+  // what a user message is, for the request tracker (keyword heuristics standing in for Jev's reading)
+  message_kind(state) {
+    const m = String(state.user_message ?? "").trim(), prev = String(state.previous_assistant_message ?? "");
+    if (/^(?:ok|okay|yes|sure|go ahead|do it|go|ㄱㄱ+|응|네|좋아|동의|부탁할게|진행해?|그렇게 해)/i.test(m) || (/^\d+번?(?:으로)?\.?$/.test(m) && prev !== "(none)")) return "approval";
+    if (m.length > 600 || (m.split("\n").length > 8 && /\|.*\||^\s*(?:\$|>|Traceback|Error:)/m.test(m))) return "paste";
+    if (/(?:don't|do not|하지\s*마|말고|대신|instead|stop|revert|되돌려|not that)/i.test(m)) return "steer";
+    if (/\?\s*$|^(?:what|why|how|어떻게|왜|뭐야|뭔데)/i.test(m) && !/(?:fix|add|make|change|고쳐|추가|만들|바꿔)/i.test(m)) return "question";
+    return "task";
+  },
+  refers_to_previous(state) {
+    const m = String(state.user_message ?? "");
+    return /(?:그거|그것|이거|저거|that one|this one|\bit\b|option \d|\d번|the (?:second|first|last)|위에|아까)/i.test(m) || /^(?:ok|yes|go|ㄱㄱ|부탁할게|동의)/i.test(m.trim()) ? 0.9 : 0.1;
+  },
   // the agent said why it runs this again: a suspected bad result, a changed input, a fix, another slice of the output
   expects_new_information(state) {
     return /odd|empty|expired|refresh|changed|fixed|full output|whole output|again with/i.test(String(state.context?.agent_stated_reason ?? "")) ? 0.9 : 0.1;
@@ -47,7 +60,7 @@ export function mockProvider({ rules = {}, latencyMs = 0, name = "mock" } = {}) 
       if (latencyMs) await new Promise((res) => setTimeout(res, latencyMs));
       const a = {};
       // evaluate in dependency order, then keep only the ids that were asked
-      for (const id of ["risk", "approval", "user_requested", "from_untrusted", "scope_expansion", "in_scope", "redundant", "necessary", "kind", "expects_new_information"]) a[id] = r[id](state, a);
+      for (const id of ["risk", "approval", "user_requested", "from_untrusted", "scope_expansion", "in_scope", "redundant", "necessary", "kind", "expects_new_information", "message_kind", "refers_to_previous"]) a[id] = r[id](state, a);
       for (const id of Object.keys(questions)) if (!(id in a) && typeof r[id] === "function") a[id] = r[id](state, a);   // per-test extra rules
       const out = {};
       for (const [id, q] of Object.entries(questions)) {

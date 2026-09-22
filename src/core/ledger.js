@@ -32,6 +32,8 @@ const CHANGE_KINDS = new Set(["edit", "write-bash", "other"]);
 const ADVISORY_WINDOW = 20;
 const CLIP_PROMPT = 1500;
 const CLIP_INSTRUCTION = 300;
+const CLIP_PROPOSAL = 1200;
+const MAX_STEERS = 2;
 
 /** Identity of a working directory for comparison: a hash of the resolved absolute path. The redacted path
  *  (`~/repo`) is for display only and must never be compared with a raw one (review P2). */
@@ -143,19 +145,21 @@ function compact(path) {
   {
     const events = parse(readFileSync(path, "utf8"));
     const state = replay(events);
-    const prompts = events.filter((e) => e.ev === "prompt").slice(-KEEP_PROMPTS);
+    const kept_prompts = events.filter((e) => e.ev === "prompt").slice(-KEEP_PROMPTS);
+    const keptSet = new Set(kept_prompts), turns = new Set(kept_prompts.map((e) => e.turn).filter((t) => t != null));
+    const prompts = events.filter((e) => keptSet.has(e) || (e.ev === "prompt_kind" && turns.has(e.turn)));   // a kind rides with its prompt
     const rest = [];   // newest first, bounded by count and by bytes so the file really shrinks
     let bytes = 0;
     for (let i = events.length - 1; i >= 0 && rest.length < KEEP_EVENTS && bytes < COMPACT_AT / 2; i--) {
-      if (["prompt", "snapshot", "attempt"].includes(events[i].ev)) continue;
+      if (["prompt", "prompt_kind", "snapshot", "attempt"].includes(events[i].ev)) continue;
       rest.push(events[i]);
       bytes += JSON.stringify(events[i]).length + 1;
     }
     // Preserve append order, not timestamps captured before a slow provider call.
     const selected = new Set([...prompts, ...rest]);
     const kept = events.filter((e) => selected.has(e)).map((e) => e.ev === "pre" ? { ...e, attempt_recorded: true } : e);
-    const snapshot = { v: 1, ev: "snapshot", attempts: state.attempts, original_request: state.original_request,
-      turn_offset: state.turn - prompts.length, seq_offset: state.seq - kept.filter((e) => e.ev === "pre").length };
+    const snapshot = { v: 1, ev: "snapshot", attempts: state.attempts, original_request: state.original_request, request: state.request,
+      turn_offset: state.turn - kept_prompts.length, seq_offset: state.seq - kept.filter((e) => e.ev === "pre").length };
     const tmp = path + ".tmp";
     writeFileSync(tmp, [snapshot, ...kept].map((e) => JSON.stringify(e)).join("\n") + "\n", { mode: 0o600 });
     renameSync(tmp, path);
@@ -192,16 +196,21 @@ export function replay(events, { now = Date.now() } = {}) {
   const byId = new Map();
   let seq = 0;
   let turn = 0, attempts = 0, original_request = null, coverageUnknown = false;
+  let request = null;   // the tracked request: {text, source, turn}, see requestAfter
   let lastPromptAt = -Infinity;
   for (const e of events) {
     if (e.ev === "snapshot") {
-      attempts = e.attempts ?? 0; turn = e.turn_offset ?? 0; seq = e.seq_offset ?? 0; original_request = e.original_request ?? null;
+      attempts = e.attempts ?? 0; turn = e.turn_offset ?? 0; seq = e.seq_offset ?? 0; original_request = e.original_request ?? null; request = e.request ?? null;
     } else if (e.ev === "attempt") { attempts++; }
     else if (e.ev === "gap") { coverageUnknown = true; }
     else if (e.ev === "prompt") {
-      prompts.push({ turn: ++turn, text: String(e.text ?? ""), digest: String(e.digest ?? ""), at: e.at ?? 0, synthetic: Boolean(e.synthetic) });
+      prompts.push({ turn: ++turn, text: String(e.text ?? ""), digest: String(e.digest ?? ""), at: e.at ?? 0, synthetic: Boolean(e.synthetic), kind: null, refers: null, prev: null });
       if (!e.synthetic && original_request == null) original_request = String(e.text ?? "");
       lastPromptAt = e.at ?? lastPromptAt;
+    } else if (e.ev === "prompt_kind") {
+      // written after the prompt event by the same hook, once Jev has said what the message is
+      const p = prompts.find((x) => x.turn === e.turn);
+      if (p && !p.synthetic) { p.kind = e.kind ?? null; p.refers = typeof e.refers === "number" ? e.refers : null; p.prev = e.prev ?? null; request = requestAfter(request, p); }
     } else if (e.ev === "pre") {
       const entry = {
         seq: ++seq, turn, tool_use_id: String(e.tool_use_id ?? `seq-${seq}`), tool: String(e.tool ?? ""), kind: e.kind ?? "other",
@@ -230,7 +239,31 @@ export function replay(events, { now = Date.now() } = {}) {
     if (entry.exec !== "running") continue;
     if (entry.started_at < lastPromptAt || now - entry.started_at > UNKNOWN_AFTER_MS) { entry.exec = "unknown"; entry.result = "unknown"; }
   }
-  return { turn, seq, prompts, entries, attempts, original_request, coverageUnknown };
+  return { turn, seq, prompts, entries, attempts, original_request, request, coverageUnknown };
+}
+
+/**
+ * The request after one classified prompt. A task (or pasted material) replaces it — together with the assistant
+ * message it points at, when it does; an approval makes the assistant's proposal the request; a steer is appended
+ * to the current one (the last MAX_STEERS); a question or an unclassified prompt changes nothing. Pure.
+ * @param {{text:string, source:string, turn:number, steers?:string[]}|null} request
+ * @param {{turn:number, text:string, kind:string|null, refers:number|null, prev:string|null}} p
+ */
+export function requestAfter(request, p) {
+  const prev = p.prev ? clip(String(p.prev), CLIP_PROPOSAL) : null;
+  if (p.kind === "task" || p.kind === "paste") {
+    const pointed = p.kind === "task" && (p.refers ?? 0) >= 0.5 && prev ? `\n\n[the assistant message this refers to]\n${prev}` : "";
+    return { text: clip((p.kind === "paste" ? "[material the user provided]\n" : "") + p.text + pointed, CLIP_PROMPT), source: `${p.kind}@${p.turn}`, turn: p.turn, steers: [] };
+  }
+  if (p.kind === "approval") {
+    return { text: clip(`[the user approved this proposal from the assistant]\n${prev ?? "(no proposal recorded)"}\n\n[user]: ${p.text}`, CLIP_PROMPT), source: `approval@${p.turn}`, turn: p.turn, steers: [] };
+  }
+  if (p.kind === "steer") {
+    if (!request) return { text: clip(p.text, CLIP_PROMPT), source: `steer@${p.turn}`, turn: p.turn, steers: [] };
+    const steers = [...(request.steers ?? []), p.text].slice(-MAX_STEERS);
+    return { ...request, steers, text: clip(request.text.replace(/\n\n\[later instruction\]: [\s\S]*$/, "") + steers.map((x) => `\n\n[later instruction]: ${x}`).join(""), CLIP_PROMPT) };
+  }
+  return request;
 }
 
 /**
@@ -286,7 +319,9 @@ export function view(state, { digest, action = digest, cwdId } = {}) {
   const real = prompts.filter((p) => !p.synthetic);   // what the user actually said; synthetic prompts only open turns
   return {
     turn,
-    original_request: state.original_request != null ? clip(state.original_request, CLIP_PROMPT) : real.length ? clip(real[0].text, CLIP_PROMPT) : null,
+    // the tracked request when the prompts were classified; the first real prompt otherwise (older ledgers, Jev down)
+    original_request: state.request?.text ?? (state.original_request != null ? clip(state.original_request, CLIP_PROMPT) : real.length ? clip(real[0].text, CLIP_PROMPT) : null),
+    request_source: state.request?.source ?? (state.original_request != null || real.length ? "first-prompt" : null),
     recent_instructions: real.slice(-3).map((p) => clip(p.text, CLIP_INSTRUCTION)),
     recent: entries.slice(-10),
     calls_this_turn: thisTurn.length,

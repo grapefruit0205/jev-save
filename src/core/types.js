@@ -20,7 +20,7 @@
  * `pre` is written by PreToolUse, `post` by PostToolUse / PostToolUseFailure, `prompt` by UserPromptSubmit.
  * @typedef {object} LedgerEvent
  * @property {1} v
- * @property {'prompt'|'pre'|'post'|'attempt'|'snapshot'|'gap'} ev
+ * @property {'prompt'|'prompt_kind'|'pre'|'post'|'attempt'|'snapshot'|'gap'} ev
  * @property {number} at              Date.now()
  * @property {number} [turn]          prompt: the new turn number; pre: the turn it belongs to
  * @property {string} [text]          prompt: redacted, clipped
@@ -39,6 +39,10 @@
  * @property {boolean} [attempt_recorded] pre: provider accounting lives in separate attempt events
  * @property {number} [attempts]      snapshot: total reserved provider attempts
  * @property {string|null} [original_request] snapshot: first real prompt
+ * @property {object|null} [request]  snapshot: the tracked request ({text, source, turn, steers})
+ * @property {'task'|'approval'|'paste'|'question'|'steer'|null} [kind]  prompt_kind: Jev's reading of the prompt of `turn`
+ * @property {number} [refers]        prompt_kind: p that the prompt points at the assistant's previous message
+ * @property {string} [prev]          prompt_kind: that previous message, redacted and clipped
  * @property {number} [turn_offset]   snapshot: turns omitted from the retained history
  * @property {number} [seq_offset]    snapshot: pre events omitted from the retained history
  * @property {false|string} [advised] pre: the rule whose advisory was sent to the agent, or false
@@ -84,7 +88,8 @@
  * What the guard (and, projected, Jev) gets to know about the session at the moment of one action.
  * @typedef {object} View
  * @property {number} turn
- * @property {string|null} original_request     first real prompt of the session, clipped
+ * @property {string|null} original_request     the tracked request (ledger.requestAfter) when prompts were classified, else the first real prompt, clipped
+ * @property {string|null} request_source       "task@7", "approval@12", "paste@3", "steer@2" or "first-prompt"
  * @property {string[]} recent_instructions     last 3 prompts, clipped
  * @property {LedgerEntry[]} recent             last 10 entries, oldest first
  * @property {number} calls_this_turn

@@ -368,3 +368,56 @@ test("pipeline: a stated reason lifts the redundant advisory; a third identical 
   assert.equal(third.advisory.suppressed, false);
   assert.equal(third.emit.text, "jev-save: #4 and #5 ran this and failed; nothing changed since. Fix the cause before running it again.");
 });
+
+test("classifyPrompt: Jev's word on the message is recorded next to the prompt, with the assistant's previous message; synthetic prompts, a missing provider and an outage leave the prompt unclassified", async () => {
+  const dir = fresh(); const logPath = join(dir, "decisions.jsonl"); const transcriptPath = join(dir, "t.jsonl");
+  const provider = mockProvider();
+  const { classifyPrompt } = await import("../src/core/guard.js");
+  writeFileSync(transcriptPath, said("남은 일: 1) ALB 로그 2) 80 리다이렉트 3) 중지된 인스턴스 2대 종료. 진행할까요?"));
+  let rec = recordPrompt(sid, "cloudwatch agent 설치 되어 있어?", { dir });
+  assert.deepEqual(rec, { turn: 1, synthetic: false });
+  assert.deepEqual(await classifyPrompt(sid, "cloudwatch agent 설치 되어 있어?", rec, { provider, transcriptPath, dir, logPath, env: {} }), { kind: "question", refers: 0.1 });
+  rec = recordPrompt(sid, "부탁할게", { dir });
+  assert.deepEqual(await classifyPrompt(sid, "부탁할게", rec, { provider, transcriptPath, dir, logPath, env: {} }), { kind: "approval", refers: 0.9 });
+  const st = replay(readEvents(sid, dir));
+  assert.equal(st.request.source, "approval@2");
+  assert.match(st.request.text, /인스턴스 2대 종료/);
+  assert.equal(view(st, { digest: "d", cwdId: cwdIdOf("/repo") }).original_request, st.request.text);
+  // synthetic: recorded, never classified
+  rec = recordPrompt(sid, "<bash-input>npm test</bash-input>", { dir });
+  assert.equal(rec.synthetic, true);
+  assert.equal(await classifyPrompt(sid, "<bash-input>npm test</bash-input>", rec, { provider, transcriptPath, dir, logPath, env: {} }), null);
+  // no provider, then an outage: the prompt stands, the request does not move
+  rec = recordPrompt(sid, "DB는 건드리지 마", { dir });
+  assert.equal(await classifyPrompt(sid, "DB는 건드리지 마", rec, { transcriptPath, dir, logPath, env: {} }), null);
+  rec = recordPrompt(sid, "auth만 봐", { dir });
+  assert.equal(await classifyPrompt(sid, "auth만 봐", rec, { provider: failingProvider(), transcriptPath, dir, logPath, env: {} }), null);
+  assert.equal(replay(readEvents(sid, dir)).request.source, "approval@2");
+  const log = logLines(logPath);
+  assert.deepEqual(log.map((l) => [l.event, l.kind ?? l.why]), [["prompt", "question"], ["prompt", "approval"], ["prompt", "provider-error"]]);
+  assert.ok(!JSON.stringify(log).includes("인스턴스"), "the log carries the kind, not the texts");
+  // the classification counts against the session budget like any other provider call
+  assert.equal(replay(readEvents(sid, dir)).attempts, 3);
+});
+
+test("pipeline: scope is judged against the tracked request — an approved proposal makes the proposed call in scope", async () => {
+  const dir = fresh(); const logPath = join(dir, "decisions.jsonl"); const transcriptPath = join(dir, "t.jsonl");
+  const { classifyPrompt } = await import("../src/core/guard.js");
+  // a provider whose scope answers depend on the request text it is shown, the way Jev's did on the trial
+  const provider = mockProvider({ rules: {
+    scope_expansion: (state) => (/terminate/.test(JSON.stringify(state.input)) && !/인스턴스 2대 종료/.test(state.context?.original_request ?? "") ? 0.9 : 0.05),
+    in_scope: (state, a) => 1 - a.scope_expansion,
+  } });
+  writeFileSync(transcriptPath, said("cloudwatch 는 설치되어 있습니다."));
+  let rec = recordPrompt(sid, "cloudwatch agent 설치 되어 있어?", { dir });
+  await classifyPrompt(sid, "cloudwatch agent 설치 되어 있어?", rec, { provider, transcriptPath, dir, logPath, env: {} });
+  const cmd = { command: "aws ec2 terminate-instances --instance-ids i-1 i-2" };
+  const before = await assess(act("Bash", cmd, { id: "t1" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise", JEV_SAVE_SECURITY: "off" } });
+  assert.equal(before.advisory?.rule, "scope", "against the first prompt the termination is off-request");
+  writeFileSync(transcriptPath, said("cloudwatch 는 설치되어 있습니다.") + said("남은 일: 1) ALB 로그 2) 80 리다이렉트 3) 중지된 인스턴스 2대 종료. 진행할까요?"));
+  rec = recordPrompt(sid, "부탁할게", { dir });
+  await classifyPrompt(sid, "부탁할게", rec, { provider, transcriptPath, dir, logPath, env: {} });
+  const after = await assess(act("Bash", cmd, { id: "t2" }), { provider, dir, logPath, env: { JEV_SAVE_MODE: "advise", JEV_SAVE_SECURITY: "off" } });
+  assert.equal(after.advisory, null, "against the approved proposal it is the request");
+  assert.equal(logLines(logPath).at(-1).view.request, "approval@2");
+});

@@ -74,6 +74,33 @@ export const REASON_QUESTION = {
   },
 };
 
+/**
+ * Asked once per user prompt, at UserPromptSubmit, so the ledger knows which text the request *is*. In a
+ * conversation the request is not the first prompt for ever: a task replaces it, "부탁할게" after a proposal makes
+ * the proposal the request, a pasted document is material to work from, a question or a remark changes nothing.
+ * Every wrong scope advisory in the interactive log came from measuring against the wrong text; on the three
+ * sessions that produced them (129 prompts) this classification took the 9 wrong ones to 0 with 0 of 26 in-scope
+ * controls turned wrong (docs/trial-2026-09-22.md).
+ */
+export const PROMPT_QUESTIONS = {
+  message_kind: {
+    type: "choice",
+    instructions: "state.user_message is one message the user sent to a coding agent mid-session; state.previous_assistant_message is what the agent had just said. What is the user's message?",
+    criteria: {
+      task: "A request for work: what to do, fix, build, check, explain, or change — including a new task that replaces the previous one.",
+      approval: "A go-ahead for what the assistant just proposed or asked about (yes, do it, go ahead, option 2, 부탁할게, ㄱㄱ), adding little or nothing of its own.",
+      paste: "Material rather than an instruction: a pasted document, log, command output, table, error text, or data, possibly with a short remark attached.",
+      question: "A question or a request for an explanation that does not ask the agent to change anything.",
+      steer: "A correction, constraint or redirection on work already under way (don't touch X, use Y instead, stop, revert, not that one).",
+    },
+  },
+  refers_to_previous: {
+    type: "noul",
+    instructions: "Can state.user_message be understood only together with state.previous_assistant_message — it points at something the assistant said (that, it, this one, the second option, the file you mentioned) or answers a question the assistant asked?",
+    criteria: { true: "Yes: on its own the message is incomplete or ambiguous.", false: "No: the message stands on its own." },
+  },
+};
+
 export const SECURITY_QUESTIONS = ACTION_QUESTIONS;
 
 /**

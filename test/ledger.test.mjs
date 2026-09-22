@@ -383,3 +383,48 @@ test("an orphaned lock (owner pid gone, or far older than any hook) is reclaimed
   assert.equal(existsSync(lock), true, "not stolen");
   rmSync(lock, { recursive: true, force: true });
 });
+
+test("the request is tracked from classified prompts: a task replaces it, an approval takes the proposal, a steer appends, a question or a paste-free remark changes nothing", () => {
+  const dir = fresh();
+  const say = (turn, text, kind, refers = 0.1, prev = null) => { append(sid, { ev: "prompt", turn, text, digest: "p" + turn }, { dir }); if (kind) append(sid, { ev: "prompt_kind", turn, kind, refers, ...(prev ? { prev } : {}) }, { dir }); };
+  const req = () => { const st = replay(readEvents(sid, dir)); return { text: view(st, { digest: "x", cwdId: "r" }).original_request, source: view(st, { digest: "x", cwdId: "r" }).request_source }; };
+  say(1, "cloudwatch agent 설치가 web 단에 되어 있는지?", "question");
+  assert.equal(req().text, "cloudwatch agent 설치가 web 단에 되어 있는지?", "before any task the first real prompt is the request, as before");
+  assert.equal(req().source, "first-prompt");
+  say(2, "로그인 버그만 고쳐.", "task");
+  assert.deepEqual(req(), { text: "로그인 버그만 고쳐.", source: "task@2" });
+  say(3, "DB는 건드리지 마", "steer");
+  assert.deepEqual(req(), { text: "로그인 버그만 고쳐.\n\n[later instruction]: DB는 건드리지 마", source: "task@2" });
+  say(4, "왜 그렇게 되는거야?", "question");
+  assert.equal(req().source, "task@2", "a question changes nothing");
+  say(5, "부탁할게", "approval", 0.9, "남은 일: 1) ALB 로그 2) 80 리다이렉트 3) 중지된 인스턴스 2대 종료");
+  assert.equal(req().source, "approval@5");
+  assert.match(req().text, /approved this proposal[\s\S]*인스턴스 2대 종료[\s\S]*\[user\]: 부탁할게/);
+  say(6, "그거 수정해줘", "task", 0.89, "락이 고아가 되면 세션이 멈추는 문제가 있습니다.");
+  assert.match(req().text, /^그거 수정해줘\n\n\[the assistant message this refers to\]\n락이 고아가/);
+  say(7, "그거 다시 봐줘", "task", 0.2, "무관한 말");
+  assert.equal(req().text, "그거 다시 봐줘", "a task that does not point at the previous message stands alone");
+  say(8, "## 결론\n총 1000 RPS …", "paste");
+  assert.match(req().text, /^\[material the user provided\]\n## 결론/);
+  assert.equal(req().source, "paste@8");
+  say(9, "unclassified because Jev was down", null);
+  assert.equal(req().source, "paste@8", "an unclassified prompt changes nothing");
+  say(10, "second steer", "steer"); say(11, "third steer", "steer");
+  assert.match(req().text, /second steer[\s\S]*third steer/);
+  assert.doesNotMatch(req().text, /DB는 건드리지 마/, "only the last two steers ride along");
+});
+
+test("the tracked request survives compaction with its prompt_kind events", () => {
+  const dir = fresh();
+  append(sid, { ev: "prompt", turn: 1, text: "fix", digest: "p1" }, { dir });
+  append(sid, { ev: "prompt_kind", turn: 1, kind: "task", refers: 0.1 }, { dir });
+  for (let i = 0; i < 30; i++) { append(sid, { ev: "prompt", turn: i + 2, text: "q" + i, digest: "p" + (i + 2) }, { dir }); append(sid, { ev: "prompt_kind", turn: i + 2, kind: "question", refers: 0.1 }, { dir }); }
+  append(sid, { ev: "prompt", turn: 32, text: "approve", digest: "p32" }, { dir });
+  append(sid, { ev: "prompt_kind", turn: 32, kind: "approval", refers: 0.9, prev: "proposal: delete the old bucket" }, { dir });
+  // force a compaction the way append() would: large events until the file passes the threshold is slow, so call the internals through a big payload
+  for (let i = 0; i < 300; i++) append(sid, { ev: "pre", turn: 32, tool_use_id: "t" + i, tool: "Bash", kind: "read", digest: "d" + i, preview: "x".repeat(7000), paths: [], cwd: "/r", exec: "running" }, { dir });
+  const st = replay(readEvents(sid, dir));
+  assert.ok(readEvents(sid, dir).some((e) => e.ev === "snapshot"), "compacted");
+  assert.equal(st.request.source, "approval@32");
+  assert.match(st.request.text, /delete the old bucket/);
+});

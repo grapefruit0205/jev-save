@@ -53,6 +53,7 @@ test("handle: a whole turn through the hook, shadow then advise", async () => {
   const provider = mockProvider();
   const o = (env = {}) => ({ agent: "claude", env, config: {}, provider, dir, logPath });
   assert.equal(await handle({ hook_event_name: "UserPromptSubmit", session_id: sid, prompt: "fix the login bug, leave the DB alone" }, o()), null);
+  assert.deepEqual(replay(readEvents(sid, dir)).request, { text: "fix the login bug, leave the DB alone", source: "task@1", turn: 1, steers: [] }, "the prompt was classified on the way in");
   assert.equal(await handle(pre("Read", { file_path: "src/auth.py" }, "u1"), o()), null);
   assert.equal(await handle(post("Read", { file_path: "src/auth.py" }, "u1", { file: {}, type: "text" }), o()), null);
   assert.equal(await handle(pre("Edit", { file_path: "src/auth.py", old_string: "a", new_string: "b" }, "u2"), o()), null);

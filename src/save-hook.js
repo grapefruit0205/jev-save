@@ -1,12 +1,12 @@
 // `jev-save hook`: JSON on stdin → JSON on stdout, for Claude Code and Codex. One process per event.
-//   UserPromptSubmit                 → a new turn in the ledger
+//   UserPromptSubmit                 → a new turn in the ledger, and Jev's word on what the message is (the request tracker)
 //   PreToolUse                       → assess; emit deny / ask / additionalContext (advise) or nothing (shadow)
 //   PostToolUse / PostToolUseFailure → close the ledger entry with the outcome
 // Anything else is ignored. Failures exit 0 with no output unless JEV_SAVE_FAIL_CLOSED is enabled for
 // a security-bearing PreToolUse call with mode advise and security on.
 import * as claude from "./adapters/claude.js";
 import * as codex from "./adapters/codex.js";
-import { assess, recordPrompt, recordResult, settings, shouldFailClosed } from "./core/guard.js";
+import { assess, classifyPrompt, recordPrompt, recordResult, settings, shouldFailClosed } from "./core/guard.js";
 import { requiresSecurity } from "./core/evidence.js";
 import { selectProvider } from "./providers/provider.js";
 import { readConfig } from "./jev.js";
@@ -25,7 +25,12 @@ export async function handle(event, { agent, env = process.env, config = readCon
   const ev = event.hook_event_name;
   const sessionId = String(event.session_id ?? "");
   if (!sessionId) return null;
-  if (ev === "UserPromptSubmit") { recordPrompt(sessionId, event.prompt, { dir, now }); return null; }
+  if (ev === "UserPromptSubmit") {
+    const recorded = recordPrompt(sessionId, event.prompt, { dir, now });
+    // which text the request is, from Jev: only Claude Code hands us the transcript (the assistant's previous message)
+    await classifyPrompt(sessionId, event.prompt, recorded, { provider: provider ?? (await selectProvider(env)), transcriptPath: typeof event.transcript_path === "string" ? event.transcript_path : undefined, dir, now, env, config, logPath });
+    return null;
+  }
   if (ev === "PostToolUse" || ev === "PostToolUseFailure") { recordResult(sessionId, adapter.toResult(event), { dir, now, env }); return null; }
   if (ev !== "PreToolUse") return null;
   const result = await assess(adapter.toAction(event), { provider: provider ?? (await selectProvider(env)), env, config, dir, logPath, now });

@@ -1,3 +1,12 @@
+# jev-save 보정 3 (2026-09-22) — 요청은 추적한다
+
+대화형에서 틀린 scope 권고 9건의 원인은 하나였다. 잘못된 텍스트에 대고 잰 것. 앞서 두 번 고치려 했고(현재 턴 프롬프트 → 축약어에 무너짐; 대화 전체 → 사실 판단이 0.34~0.39) 둘 다 되돌렸다. 이번엔 Jev가 잘하는 것만 시킨다. "이 메시지는 무엇인가."
+
+- UserPromptSubmit에서 Jev 1회(3초 예산): `message_kind` task/approval/paste/question/steer, `refers_to_previous`. 직전 에이전트 메시지는 트랜스크립트 꼬리에서. 결과는 `prompt_kind` 이벤트.
+- replay가 `requestAfter`로 요청 상태를 만든다. task·paste는 요청을 바꾸고(가리키면 직전 에이전트 메시지를 붙임), approval은 에이전트의 제안을 요청으로, steer는 마지막 둘까지 덧붙임, question은 무변경, 미분류도 무변경. `view.original_request`가 이것이고, 옛 원장이나 Jev 장애 때는 첫 프롬프트로 되돌아간다. 스냅샷에 실려 compaction을 넘는다.
+- 검증([trial-2026-09-22.md](trial-2026-09-22.md) "Request tracking"): 라벨 세션 3개, 프롬프트 129개, 실제 입력, Jev 실호출. 틀린 9건 발동 0/9(첫 프롬프트 기준 오늘 규칙 2/9, 당시 규칙 9/9), 대조군 26건 0/26. 붙여넣기는 요청으로 센다.
+- scope·necessary 규칙 자체는 안 바꿨다. 바뀐 건 무엇에 대고 재는가뿐이다.
+
 # jev-save 보정 2 (2026-09-22) — 반복은 원장이, 예외는 Jev가
 
 무인 실행 시험([trial-2026-09-22.md](trial-2026-09-22.md))에서 고친 것만 적는다. 아래 기록과 충돌하면 이 절이 우선한다.

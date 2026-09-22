@@ -10,7 +10,7 @@ import { actionDigestOf, actionOutcome, classifyAction, digestOf, pathsOf, previ
 import { append, clip, cwdIdOf, DEFAULT_DIR, readEvents, replay, reserveCall, view } from "./ledger.js";
 import { readTranscript } from "./transcript.js";
 import { buildState } from "./context.js";
-import { BUNDLE_VERSION, bundle } from "./questions.js";
+import { BUNDLE_VERSION, bundle, PROMPT_QUESTIONS } from "./questions.js";
 import { decide, thresholds } from "./policy.js";
 import { cacheKey, lookup, store } from "./cache.js";
 import { logDecision } from "./log.js";
@@ -66,14 +66,46 @@ export function shouldJudge(cls, v, s) {
 // Hosts also deliver things that are not the user speaking as prompts: the desktop app's terminal echo
 // (`<bash-input>`), slash-command echoes, injected context, interruption notices, session-resume banners.
 // They still start a turn, but they are not a request and must never become original_request.
-export const SYNTHETIC_PROMPT = /^\s*(?:<(?:bash-input|bash-stdout|bash-stderr|command-name|command-message|command-args|local-command-stdout|local-command-stderr|system-reminder|teammate-message|agent-message|ide_selection|ide_opened_file)\b|\[Request interrupted|Caveat:|This session is being continued|Continue from where you left off|Please continue the conversation)/i;
+export const SYNTHETIC_PROMPT = /^\s*(?:<(?:bash-input|bash-stdout|bash-stderr|command-name|command-message|command-args|local-command-stdout|local-command-stderr|system-reminder|teammate-message|agent-message|task-notification|ide_selection|ide_opened_file)\b|\[Request interrupted|Caveat:|This session is being continued|Continue from where you left off|Please continue the conversation)/i;
 
+/** @returns {{turn:number, synthetic:boolean}|false} */
 export function recordPrompt(sessionId, text, { dir = DEFAULT_DIR(), now = Date.now(), home = homedir() } = {}) {
   const clean = redact(String(text ?? ""), home).slice(0, 1500);
   if (!clean.trim()) return false;
   const turn = replay(readEvents(sessionId, dir), { now }).turn + 1;
   const synthetic = SYNTHETIC_PROMPT.test(clean);
-  return append(sessionId, { ev: "prompt", turn, text: synthetic ? clean.slice(0, 200) : clean, digest: sha(String(text)), ...(synthetic ? { synthetic: true } : {}) }, { dir, now });
+  const ok = append(sessionId, { ev: "prompt", turn, text: synthetic ? clean.slice(0, 200) : clean, digest: sha(String(text)), ...(synthetic ? { synthetic: true } : {}) }, { dir, now });
+  return ok ? { turn, synthetic } : false;
+}
+
+// A UserPromptSubmit hook has 5 s; the classification gets 3 so the prompt event is never the thing that times out.
+const PROMPT_TIMEOUT_MS = 3000;
+
+/**
+ * Ask Jev what the user's message is (task / approval / paste / question / steer) and whether it points at the
+ * assistant's previous message, and record the answer as a `prompt_kind` event so replay can track the request.
+ * Optional at every step: no provider, no transcript, a timeout or a spent budget leave the prompt recorded and
+ * unclassified, which replay treats as "changes nothing".
+ * @param {{turn:number, synthetic:boolean}|false} recorded  what recordPrompt returned
+ */
+export async function classifyPrompt(sessionId, text, recorded, { provider, transcriptPath, dir = DEFAULT_DIR(), now = Date.now(), home = homedir(), env = process.env, config = {}, logPath } = {}) {
+  if (!recorded || recorded.synthetic || !provider) return null;
+  const s = settings(env, config);
+  const prev = transcriptPath ? readTranscript(transcriptPath).narration : null;
+  const state = { user_message: redact(String(text ?? ""), home).slice(0, 1500), previous_assistant_message: prev ? clip(redact(prev, home), 1200) : "(none)" };
+  const reservation = reserveCall(sessionId, { limit: s.maxCalls, dir, now });
+  if (!reservation.ok) return null;
+  const started = Date.now();
+  try {
+    const a = await provider.decide(state, PROMPT_QUESTIONS, { env, timeoutMs: PROMPT_TIMEOUT_MS });
+    const kind = a.message_kind?.choice ?? null, refers = typeof a.refers_to_previous?.p === "number" ? Math.round(a.refers_to_previous.p * 100) / 100 : null;
+    append(sessionId, { ev: "prompt_kind", turn: recorded.turn, kind, refers, ...(prev ? { prev: clip(redact(prev, home), 1200) } : {}) }, { dir, now });
+    logDecision({ event: "prompt", session: sha(sessionId).slice(0, 12), turn: recorded.turn, kind, refers, latency_ms: Date.now() - started, provider: provider.name, model: provider.last?.model ?? s.model }, { path: logPath ?? undefined, now });
+    return { kind, refers };
+  } catch (err) {
+    logDecision({ event: "prompt", session: sha(sessionId).slice(0, 12), turn: recorded.turn, why: "provider-error", error: String(err?.message ?? err), latency_ms: Date.now() - started }, { path: logPath ?? undefined, now });
+    return null;
+  }
 }
 
 /**
@@ -154,7 +186,7 @@ export async function assess(action, { provider, env = process.env, config = {},
   append(action.sessionId, pre({ turn, decision: r.decision, judged: true, advised, exec: emit?.kind === "deny" ? "blocked" : "running" }), { dir, now });
   log({ turn, decision: r.decision, fired: r.fired, advisory: r.advisory ? { rule: r.advisory.rule, suppressed: r.advisory.suppressed, why: r.advisory.why } : null, emitted: emit?.kind ?? null,
     signals: r.signals, margin: r.decisionMargin, cached, latency_ms: latencyMs, provider: provider.name, model: cached ? undefined : provider.last?.model ?? s.model,
-    view: { calls: v.calls_this_turn, same: v.same_action_count_this_turn, validity: v.validity, last: v.last_outcome_of_this_action, fails: v.failed_runs.length, last_ms: v.last_duration_ms, last_chars: v.last_output_chars, reason: reason || undefined } });
+    view: { calls: v.calls_this_turn, same: v.same_action_count_this_turn, validity: v.validity, last: v.last_outcome_of_this_action, fails: v.failed_runs.length, last_ms: v.last_duration_ms, last_chars: v.last_output_chars, reason: reason || undefined, request: v.request_source ?? undefined } });
   return { ...base, decision: r.decision, advisory: r.advisory, emit, signals: r.signals, judged: true, cached, latencyMs, reason: r.reason };
 }
 

@@ -39,7 +39,7 @@ Jev는 코드를 쓰지 않고 계획도 세우지 않습니다. 어떻게 풀�
 ## 어떻게 동작하는가
 
 ```
-사용자 프롬프트 ──► UserPromptSubmit hook ──► ledger: 새 턴, 요청 기록
+사용자 프롬프트 ──► UserPromptSubmit hook ──► Jev 1회: 이 메시지는 무엇인가 ──► ledger: 새 턴, 지금 시점의 요청
 tool call      ──► PreToolUse hook ──────► 분류 ──► Jev에 물을 호출인가? ──► Jev 요청 한 번 ──► 정책 ──► allow / 권고 / ask / deny
 tool 결과       ──► PostToolUse hook ─────► ledger: 결과(pass / fail / unknown), 소요 시간, 출력 크기
 ```
@@ -47,6 +47,8 @@ tool 결과       ──► PostToolUse hook ─────► ledger: 결과(p
 **ledger.** hook은 호출마다 별도 프로세스로 뜨므로, 세션의 기억은 `~/.jev-save/sessions/` 아래 세션당 하나인 append-only JSONL 파일입니다. 프롬프트, 제안된 호출(도구, 종류, 가려진 미리보기, 경로), 결과가 호스트의 `tool_use_id`로 이어져 기록됩니다. 결과가 끝내 오지 않은 호출은 (호스트가 중단됐거나 새 프롬프트가 먼저 왔거나) `unknown`이고, `unknown`은 절대 증거로 쓰지 않습니다. 여기서 guard는 눈앞의 호출에 대해 이런 것을 뽑아냅니다. 같은 행동이 이 턴에 몇 번 있었는지, 지난번 결과가 무엇이었고 얼마나 걸렸는지, 마지막 통과 이후 무엇이 바뀌었는지, 그래서 그 통과가 아직 *valid*인지 *stale*인지 *unknown*인지, 그리고 아무것도 바뀌지 않은 채 같은 실패가 몇 번 쌓였는지.
 
 "같은 행동"은 정확한 명령 문자열이 아니라 *생산자*입니다. `terraform plan | tail -250`과 `terraform plan | grep "No changes"`는 같은 행동을 다른 파이프로 본 것입니다(파이프라인 소비자, 라벨용 echo, 출력 리다이렉트는 버리고 플래그, `cd`, 환경 변수 대입, heredoc 본문은 남깁니다). 답변 캐시는 여전히 정확한 입력을 키로 씁니다.
+
+**무엇이 요청인가.** 대화에서 요청은 첫 프롬프트로 고정되지 않습니다. 프롬프트마다 Jev에게 메시지 자체에 대해 하나를 묻습니다. *task*인지, 방금 제안한 것에 대한 *approval*인지, 붙여넣은 *material*인지, *question*인지, 진행 중인 일에 대한 *steer*인지, 그리고 직전 에이전트 메시지를 가리키는지. task(또는 붙여넣기)는 요청을 바꾸고 가리킨다면 그 에이전트 메시지를 함께 붙이며, 제안 뒤의 "부탁할게"는 그 제안을 요청으로 만들고, steer는 덧붙이고, question은 아무것도 바꾸지 않습니다. 대화형 로그의 틀린 scope 권고는 전부 잘못된 텍스트에 대고 잰 것이었습니다(33턴 전 첫 프롬프트, 붙여넣은 문서, 내용이 에이전트 메시지에 있던 승인). 이 추적으로 다시 재니 틀린 9건이 0이 됐고 범위 안 대조군 26건 중 새로 틀린 것은 없었습니다(docs/trial-2026-09-22.md). 비용은 프롬프트당 Jev 1회, UserPromptSubmit 훅 안에서 약 0.7초. Jev가 안 되면 프롬프트는 분류 없이 기록되고 요청은 그대로입니다.
 
 Claude Code에서는 호스트 자신의 트랜스크립트 끝부분도 읽습니다. hook이 절대 전해주지 않는 두 가지 때문입니다. PostToolUse가 뜨지 않은 호출의 결과(`dontAsk` 모드의 권한 거부는 항목을 *실행 안 됨*으로 닫아서 실행으로도 변경으로도 세지 않음), 그리고 호출 직전 에이전트가 말한 것, 즉 밝힌 이유입니다.
 
@@ -60,6 +62,7 @@ Claude Code에서는 호스트 자신의 트랜스크립트 끝부분도 읽습�
 | `necessary` | 예/아니오 | 이미 한 일과 알게 된 것을 볼 때 이 호출이 지금 요청을 진전시키는가? |
 | `scope_expansion` | 예/아니오 | 새 추상화, 무관한 리팩터링, migration, 추가 기능, 사용자가 제외한 영역의 편집을 들여오는가? |
 | `kind` | 선택 | progress · verification · exploration · repetition · expansion |
+| `message_kind`, `refers_to_previous` | 선택, 예/아니오 | 호출이 아니라 프롬프트마다: task · approval · paste · question · steer, 그리고 직전 에이전트 메시지를 가리키는가 |
 | `expects_new_information` | 예/아니오 | 이미 실행된 호출을 반복할 때만 묻는다. 에이전트의 직전 서술이 다른 결과를 기대할 구체적 이유를 말하는가? 앞 결과가 틀렸다는 의심, 바뀐 입력, 적용한 수정, 큰 출력의 다른 부분 |
 | `risk`, `approval`, `user_requested` | jev-guard의 질문 | 얼마나 해로울 수 있는가, 신중한 엔지니어라면 사람의 확인을 원할까, 사용자가 정확히 이것을 부탁했는가? |
 
